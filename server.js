@@ -19,10 +19,29 @@ const app = express();
 // Connect to MongoDB
 connectDB();
 
+// Build the list of allowed origins. CLIENT_URL may be a comma-separated list.
+// Vite falls back to 5174/5175 when 5173 is taken, so allow those in dev too.
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'].forEach(
+  (o) => {
+    if (!allowedOrigins.includes(o)) allowedOrigins.push(o);
+  }
+);
+
 // Middleware
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. curl, Postman) and whitelisted origins
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
   })
 );
