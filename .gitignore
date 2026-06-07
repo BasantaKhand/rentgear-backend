@@ -2,5 +2,12 @@ node_modules/
 .env
 uploads/*
 !uploads/.gitkeep
+# Keep the upload subfolders tracked (but not their uploaded contents)
+!uploads/ids/
+uploads/ids/*
+!uploads/ids/.gitkeep
+!uploads/equipment/
+uploads/equipment/*
+!uploads/equipment/.gitkeep
 *.log
 .DS_Store
