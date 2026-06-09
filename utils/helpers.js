@@ -1,4 +1,20 @@
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+
+// Delete an uploaded file given its public path (e.g. "/uploads/equipment/x.jpg").
+// Resolves against the project root and fails gracefully if the file is missing.
+const deleteUploadedFile = (publicPath) => {
+  if (!publicPath) return;
+  // Strip a leading slash so path.join resolves correctly
+  const relative = publicPath.replace(/^[/\\]+/, '');
+  const absolute = path.join(__dirname, '..', relative);
+  fs.unlink(absolute, (err) => {
+    if (err && err.code !== 'ENOENT') {
+      console.error(`Failed to delete file ${absolute}: ${err.message}`);
+    }
+  });
+};
 
 // Generate a signed JWT for a user id
 const generateToken = (id) => {
@@ -31,4 +47,5 @@ module.exports = {
   calculateDays,
   calculateTotalPrice,
   generateTransactionId,
+  deleteUploadedFile,
 };
