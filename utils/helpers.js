@@ -1,6 +1,46 @@
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
+const Booking = require('../models/Booking');
+const Equipment = require('../models/Equipment');
+
+// Normalize a date to the start of its day (strips time for date-only compares)
+const startOfDay = (value) => {
+  const d = new Date(value);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+// Check whether an equipment item is available for the given date range.
+// Counts non-cancelled bookings that overlap the range and compares against
+// the equipment's quantity. Optionally excludes a booking (for updates).
+const checkAvailability = async (
+  equipmentId,
+  startDate,
+  endDate,
+  excludeBookingId = null
+) => {
+  const equipment = await Equipment.findById(equipmentId);
+  if (!equipment || !equipment.available || equipment.quantity < 1) {
+    return false;
+  }
+
+  const start = startOfDay(startDate);
+  const end = startOfDay(endDate);
+
+  const query = {
+    equipment: equipmentId,
+    status: { $ne: 'cancelled' },
+    startDate: { $lte: end },
+    endDate: { $gte: start },
+  };
+  if (excludeBookingId) {
+    query._id = { $ne: excludeBookingId };
+  }
+
+  const overlapping = await Booking.countDocuments(query);
+  return overlapping < equipment.quantity;
+};
 
 // Delete an uploaded file given its public path (e.g. "/uploads/equipment/x.jpg").
 // Resolves against the project root and fails gracefully if the file is missing.
@@ -48,4 +88,6 @@ module.exports = {
   calculateTotalPrice,
   generateTransactionId,
   deleteUploadedFile,
+  startOfDay,
+  checkAvailability,
 };
