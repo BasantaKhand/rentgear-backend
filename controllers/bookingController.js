@@ -1,5 +1,7 @@
 const Booking = require('../models/Booking');
 const Equipment = require('../models/Equipment');
+const Payment = require('../models/Payment');
+const { settleBookingPayment } = require('./paymentController');
 const {
   calculateDays,
   checkAvailability,
@@ -134,8 +136,14 @@ exports.checkout = async (req, res, next) => {
       }
     }
 
-    // All valid: create bookings
-    const created = [];
+    // Payment method for the whole checkout (defaults to card)
+    const paymentMethod = ['card', 'cash'].includes(req.body.paymentMethod)
+      ? req.body.paymentMethod
+      : 'card';
+
+    // All valid: create bookings and a payment record for each
+    const createdBookings = [];
+    const createdPayments = [];
     for (const item of items) {
       const result = await buildBooking(
         req.user._id,
@@ -144,14 +152,17 @@ exports.checkout = async (req, res, next) => {
         item.endDate
       );
       if (result.booking) {
-        created.push(await result.booking.populate('equipment'));
+        const payment = await settleBookingPayment(result.booking, paymentMethod);
+        createdPayments.push(payment);
+        createdBookings.push(await result.booking.populate('equipment'));
       }
     }
 
     return res.status(201).json({
       success: true,
-      count: created.length,
-      bookings: created,
+      count: createdBookings.length,
+      bookings: createdBookings,
+      payments: createdPayments,
     });
   } catch (error) {
     next(error);
@@ -230,6 +241,14 @@ exports.cancelBooking = async (req, res, next) => {
 
     booking.status = 'cancelled';
     await booking.save();
+
+    // If a completed payment exists, mark it refunded
+    const payment = await Payment.findOne({ booking: booking._id });
+    if (payment && payment.status === 'completed') {
+      payment.status = 'refunded';
+      await payment.save();
+    }
+
     await booking.populate('equipment');
 
     return res.json({ success: true, booking });
