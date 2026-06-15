@@ -82,6 +82,12 @@ const generateTransactionId = () => {
   return `TXN-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 };
 
+// Simulate a payment gateway call. Always succeeds for now; a future version
+// could randomly fail to exercise error handling.
+const simulatePayment = () => {
+  return { success: true, transactionId: generateTransactionId() };
+};
+
 module.exports = {
   generateToken,
   calculateDays,
@@ -90,4 +96,5 @@ module.exports = {
   deleteUploadedFile,
   startOfDay,
   checkAvailability,
+  simulatePayment,
 };
