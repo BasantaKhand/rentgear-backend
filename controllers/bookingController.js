@@ -6,6 +6,8 @@ const {
   calculateDays,
   checkAvailability,
   startOfDay,
+  calculateOverdue,
+  getReturnInstructions,
 } = require('../utils/helpers');
 
 // Validate a single booking's dates. Returns an error string or null.
@@ -252,6 +254,184 @@ exports.cancelBooking = async (req, res, next) => {
     await booking.populate('equipment');
 
     return res.json({ success: true, booking });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  GET /api/bookings/:id/return-info
+// @desc   Return due date, overdue status, late fee and instructions
+// @access Private (owner or admin)
+exports.getReturnInfo = async (req, res, next) => {
+  try {
+    const booking = await Booking.findById(req.params.id).populate('equipment');
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Booking not found' });
+    }
+
+    const isOwner = booking.user.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+    if (!isOwner && !isAdmin) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Not authorized for this booking' });
+    }
+
+    const { isOverdue, daysOverdue } = calculateOverdue(booking.endDate);
+    const dailyRate = booking.equipment ? booking.equipment.dailyRate : 0;
+    const lateFee = isOverdue ? dailyRate * daysOverdue : 0;
+
+    return res.json({
+      success: true,
+      dueDate: booking.endDate,
+      isOverdue,
+      daysOverdue,
+      lateFee,
+      returnInstructions: getReturnInstructions(),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  PUT /api/bookings/:id/extend
+// @desc   Extend an active booking's end date
+// @access Private (owner)
+exports.extendBooking = async (req, res, next) => {
+  try {
+    const { newEndDate } = req.body;
+
+    const booking = await Booking.findById(req.params.id).populate('equipment');
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Booking not found' });
+    }
+
+    if (booking.user.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Not authorized for this booking' });
+    }
+
+    if (booking.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only active bookings can be extended',
+      });
+    }
+
+    const currentEnd = startOfDay(booking.endDate);
+    const requestedEnd = startOfDay(newEndDate);
+    if (isNaN(requestedEnd.getTime()) || requestedEnd <= currentEnd) {
+      return res.status(400).json({
+        success: false,
+        message: 'newEndDate must be after the current end date',
+      });
+    }
+
+    // Ensure the equipment is free for the extended window (excluding this booking)
+    const available = await checkAvailability(
+      booking.equipment._id,
+      booking.endDate,
+      newEndDate,
+      booking._id
+    );
+    if (!available) {
+      return res.status(409).json({
+        success: false,
+        message: 'Equipment is not available for the extended period',
+      });
+    }
+
+    const additionalDays = calculateDays(booking.endDate, newEndDate);
+    const additionalPrice = booking.equipment.dailyRate * additionalDays;
+    const previousEndDate = booking.endDate;
+
+    booking.endDate = newEndDate;
+    booking.totalPrice += additionalPrice;
+    booking.extensionHistory.push({
+      previousEndDate,
+      newEndDate,
+      additionalDays,
+      additionalPrice,
+    });
+
+    await booking.save();
+
+    return res.json({
+      success: true,
+      booking,
+      extension: { additionalDays, additionalPrice, previousEndDate, newEndDate },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  POST /api/bookings/:id/late-fee
+// @desc   Calculate and apply a late fee (admin)
+// @access Private/Admin
+exports.applyLateFee = async (req, res, next) => {
+  try {
+    const booking = await Booking.findById(req.params.id).populate('equipment');
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Booking not found' });
+    }
+
+    const { isOverdue, daysOverdue } = calculateOverdue(booking.endDate);
+    const dailyRate = booking.equipment ? booking.equipment.dailyRate : 0;
+    const lateFee = isOverdue ? dailyRate * daysOverdue : 0;
+
+    booking.lateFee = lateFee;
+    await booking.save();
+
+    return res.json({
+      success: true,
+      booking,
+      lateFeeDetails: { isOverdue, daysOverdue, dailyRate, lateFee },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  PUT /api/bookings/:id/return
+// @desc   Mark a booking as returned/completed (admin), applying late fees
+// @access Private/Admin
+exports.markReturned = async (req, res, next) => {
+  try {
+    const booking = await Booking.findById(req.params.id).populate('equipment');
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Booking not found' });
+    }
+
+    if (!['approved', 'active'].includes(booking.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot mark a ${booking.status} booking as returned`,
+      });
+    }
+
+    // Auto-apply late fee if overdue
+    const { isOverdue, daysOverdue } = calculateOverdue(booking.endDate);
+    const dailyRate = booking.equipment ? booking.equipment.dailyRate : 0;
+    booking.lateFee = isOverdue ? dailyRate * daysOverdue : 0;
+    booking.status = 'completed';
+
+    await booking.save();
+
+    return res.json({
+      success: true,
+      booking,
+      lateFeeApplied: booking.lateFee,
+    });
   } catch (error) {
     next(error);
   }
