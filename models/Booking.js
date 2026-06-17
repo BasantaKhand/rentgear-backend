@@ -34,6 +34,20 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'active', 'completed', 'cancelled'],
     default: 'pending',
   },
+  lateFee: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  extensionHistory: [
+    {
+      previousEndDate: Date,
+      newEndDate: Date,
+      additionalDays: Number,
+      additionalPrice: Number,
+      extendedAt: { type: Date, default: Date.now },
+    },
+  ],
   createdAt: {
     type: Date,
     default: Date.now,
