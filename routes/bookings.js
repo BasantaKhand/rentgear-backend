@@ -8,8 +8,13 @@ const {
   getMyBookings,
   getBookingById,
   cancelBooking,
+  getReturnInfo,
+  extendBooking,
+  applyLateFee,
+  markReturned,
 } = require('../controllers/bookingController');
 const auth = require('../middleware/auth');
+const admin = require('../middleware/admin');
 const validate = require('../middleware/validate');
 
 // All booking routes require authentication
@@ -43,5 +48,22 @@ router.get('/:id', getBookingById);
 
 // @route  PUT /api/bookings/:id/cancel
 router.put('/:id/cancel', cancelBooking);
+
+// @route  GET /api/bookings/:id/return-info
+router.get('/:id/return-info', getReturnInfo);
+
+// @route  PUT /api/bookings/:id/extend
+router.put(
+  '/:id/extend',
+  [body('newEndDate').notEmpty().withMessage('newEndDate is required')],
+  validate,
+  extendBooking
+);
+
+// @route  POST /api/bookings/:id/late-fee  (admin)
+router.post('/:id/late-fee', admin, applyLateFee);
+
+// @route  PUT /api/bookings/:id/return  (admin)
+router.put('/:id/return', admin, markReturned);
 
 module.exports = router;
