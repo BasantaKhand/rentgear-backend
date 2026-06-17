@@ -88,6 +88,33 @@ const simulatePayment = () => {
   return { success: true, transactionId: generateTransactionId() };
 };
 
+// Determine overdue status for a booking end date relative to "now".
+// Uses date-only comparison (time ignored).
+const calculateOverdue = (endDate, asOf = new Date()) => {
+  const due = startOfDay(endDate);
+  const today = startOfDay(asOf);
+  const diffDays = Math.floor((today - due) / (1000 * 60 * 60 * 24));
+  const daysOverdue = diffDays > 0 ? diffDays : 0;
+  return { isOverdue: daysOverdue > 0, daysOverdue };
+};
+
+// Standard return instructions shown to customers.
+const getReturnInstructions = () => ({
+  location: 'RentGear Depot, 123 Rental Ave, Kathmandu',
+  hours: 'Mon-Sat, 9:00 AM - 6:00 PM',
+  conditionRequirements: [
+    'Return the equipment clean and in the same condition it was received',
+    'Include all accessories, cables and original packaging',
+    'Report any damage or malfunction to staff at drop-off',
+  ],
+  checklist: [
+    'Bring your booking reference or ID',
+    'Ensure batteries are charged / fuel tanks as received',
+    'Remove personal storage cards or data',
+    'Get a return confirmation receipt from staff',
+  ],
+});
+
 module.exports = {
   generateToken,
   calculateDays,
@@ -97,4 +124,6 @@ module.exports = {
   startOfDay,
   checkAvailability,
   simulatePayment,
+  calculateOverdue,
+  getReturnInstructions,
 };
