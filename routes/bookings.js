@@ -12,6 +12,8 @@ const {
   extendBooking,
   applyLateFee,
   markReturned,
+  getInvoice,
+  downloadInvoice,
 } = require('../controllers/bookingController');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
@@ -65,5 +67,11 @@ router.post('/:id/late-fee', admin, applyLateFee);
 
 // @route  PUT /api/bookings/:id/return  (admin)
 router.put('/:id/return', admin, markReturned);
+
+// @route  GET /api/bookings/:id/invoice
+router.get('/:id/invoice', getInvoice);
+
+// @route  GET /api/bookings/:id/invoice/download
+router.get('/:id/invoice/download', downloadInvoice);
 
 module.exports = router;
