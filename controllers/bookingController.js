@@ -9,6 +9,7 @@ const {
   calculateOverdue,
   getReturnInstructions,
 } = require('../utils/helpers');
+const { buildInvoiceData, streamInvoicePDF } = require('../utils/invoiceGenerator');
 
 // Validate a single booking's dates. Returns an error string or null.
 function validateDates(startDate, endDate) {
@@ -432,6 +433,64 @@ exports.markReturned = async (req, res, next) => {
       booking,
       lateFeeApplied: booking.lateFee,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Fetch a booking (populated), verify owner/admin access, and build invoice data.
+// Returns { invoice } or { error, status }.
+async function loadInvoice(bookingId, requestUser) {
+  const booking = await Booking.findById(bookingId)
+    .populate('equipment')
+    .populate('user', '-password');
+
+  if (!booking) {
+    return { error: 'Booking not found', status: 404 };
+  }
+
+  const ownerId = booking.user._id
+    ? booking.user._id.toString()
+    : booking.user.toString();
+  const isOwner = ownerId === requestUser._id.toString();
+  const isAdmin = requestUser.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    return { error: 'Not authorized for this invoice', status: 403 };
+  }
+
+  const payment = await Payment.findOne({ booking: booking._id });
+  return { invoice: buildInvoiceData(booking, payment) };
+}
+
+// @route  GET /api/bookings/:id/invoice
+// @desc   Get invoice data as JSON
+// @access Private (owner or admin)
+exports.getInvoice = async (req, res, next) => {
+  try {
+    const result = await loadInvoice(req.params.id, req.user);
+    if (result.error) {
+      return res
+        .status(result.status)
+        .json({ success: false, message: result.error });
+    }
+    return res.json({ success: true, invoice: result.invoice });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  GET /api/bookings/:id/invoice/download
+// @desc   Download invoice as a PDF
+// @access Private (owner or admin)
+exports.downloadInvoice = async (req, res, next) => {
+  try {
+    const result = await loadInvoice(req.params.id, req.user);
+    if (result.error) {
+      return res
+        .status(result.status)
+        .json({ success: false, message: result.error });
+    }
+    streamInvoicePDF(result.invoice, res);
   } catch (error) {
     next(error);
   }
