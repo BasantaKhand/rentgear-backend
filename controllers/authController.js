@@ -1,6 +1,8 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const { generateToken } = require('../utils/helpers');
+const { sendEmail } = require('../config/email');
+const { welcomeEmail } = require('../utils/emailTemplates');
 
 // Build a safe user object without the password field
 const sanitizeUser = (user) => ({
@@ -45,6 +47,9 @@ exports.register = async (req, res, next) => {
     });
 
     const token = generateToken(user._id);
+
+    // Send welcome email (non-blocking, must not fail registration)
+    sendEmail({ to: user.email, ...welcomeEmail(user) }).catch(() => {});
 
     return res.status(201).json({
       success: true,
