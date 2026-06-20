@@ -10,6 +10,12 @@ const {
   getReturnInstructions,
 } = require('../utils/helpers');
 const { buildInvoiceData, streamInvoicePDF } = require('../utils/invoiceGenerator');
+const { sendEmail } = require('../config/email');
+const {
+  bookingConfirmation,
+  bookingStatusUpdate,
+  paymentReceipt,
+} = require('../utils/emailTemplates');
 
 // Validate a single booking's dates. Returns an error string or null.
 function validateDates(startDate, endDate) {
@@ -157,7 +163,20 @@ exports.checkout = async (req, res, next) => {
       if (result.booking) {
         const payment = await settleBookingPayment(result.booking, paymentMethod);
         createdPayments.push(payment);
-        createdBookings.push(await result.booking.populate('equipment'));
+        const populated = await result.booking.populate('equipment');
+        createdBookings.push(populated);
+
+        // Notify: booking confirmation + payment receipt (non-blocking)
+        sendEmail({
+          to: req.user.email,
+          ...bookingConfirmation(populated),
+        }).catch(() => {});
+        if (payment.status === 'completed') {
+          sendEmail({
+            to: req.user.email,
+            ...paymentReceipt(payment, populated),
+          }).catch(() => {});
+        }
       }
     }
 
@@ -253,6 +272,12 @@ exports.cancelBooking = async (req, res, next) => {
     }
 
     await booking.populate('equipment');
+
+    // Notify owner of cancellation (non-blocking)
+    sendEmail({
+      to: req.user.email,
+      ...bookingStatusUpdate(booking, 'cancelled'),
+    }).catch(() => {});
 
     return res.json({ success: true, booking });
   } catch (error) {
@@ -406,7 +431,9 @@ exports.applyLateFee = async (req, res, next) => {
 // @access Private/Admin
 exports.markReturned = async (req, res, next) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate('equipment');
+    const booking = await Booking.findById(req.params.id)
+      .populate('equipment')
+      .populate('user', 'name email');
     if (!booking) {
       return res
         .status(404)
@@ -427,6 +454,14 @@ exports.markReturned = async (req, res, next) => {
     booking.status = 'completed';
 
     await booking.save();
+
+    // Notify the booking owner (non-blocking)
+    if (booking.user && booking.user.email) {
+      sendEmail({
+        to: booking.user.email,
+        ...bookingStatusUpdate(booking, 'completed'),
+      }).catch(() => {});
+    }
 
     return res.json({
       success: true,
