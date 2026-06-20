@@ -1,6 +1,8 @@
 const Payment = require('../models/Payment');
 const Booking = require('../models/Booking');
 const { simulatePayment } = require('../utils/helpers');
+const { sendEmail } = require('../config/email');
+const { paymentReceipt } = require('../utils/emailTemplates');
 
 // Reusable: create and settle a payment for a booking.
 // - card: simulate the gateway; on success mark payment completed and
@@ -75,6 +77,14 @@ exports.createPayment = async (req, res, next) => {
 
     const payment = await settleBookingPayment(booking, method, transactionId);
     await payment.populate('booking');
+
+    // Send a payment receipt (non-blocking) for completed payments
+    if (payment.status === 'completed') {
+      sendEmail({
+        to: req.user.email,
+        ...paymentReceipt(payment, booking),
+      }).catch(() => {});
+    }
 
     return res.status(201).json({ success: true, payment });
   } catch (error) {
