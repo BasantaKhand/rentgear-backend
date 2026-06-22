@@ -98,6 +98,45 @@ const calculateOverdue = (endDate, asOf = new Date()) => {
   return { isOverdue: daysOverdue > 0, daysOverdue };
 };
 
+// Return the [start, end] date range for a named period, relative to now.
+const getDateRange = (period) => {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+
+  switch (period) {
+    case 'today':
+      start.setHours(0, 0, 0, 0);
+      break;
+    case 'week': {
+      // Week starts Monday
+      const day = start.getDay();
+      const diff = day === 0 ? 6 : day - 1;
+      start.setDate(start.getDate() - diff);
+      start.setHours(0, 0, 0, 0);
+      break;
+    }
+    case 'month':
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+      break;
+    case 'year':
+      start.setMonth(0, 1);
+      start.setHours(0, 0, 0, 0);
+      break;
+    default:
+      start.setHours(0, 0, 0, 0);
+  }
+  return { start, end };
+};
+
+// Percentage change from previous to current (rounded integer).
+const calculatePercentageChange = (current, previous) => {
+  if (!previous || previous === 0) return current > 0 ? 100 : 0;
+  return Math.round(((current - previous) / previous) * 100);
+};
+
 // Standard return instructions shown to customers.
 const getReturnInstructions = () => ({
   location: 'RentGear Depot, 123 Rental Ave, Kathmandu',
@@ -126,4 +165,6 @@ module.exports = {
   simulatePayment,
   calculateOverdue,
   getReturnInstructions,
+  getDateRange,
+  calculatePercentageChange,
 };
