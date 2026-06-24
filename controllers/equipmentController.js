@@ -143,10 +143,171 @@ exports.deleteEquipment = async (req, res, next) => {
         .json({ success: false, message: 'Equipment not found' });
     }
 
+    // Prevent deletion while there are active rentals
+    const activeCount = await Booking.countDocuments({
+      equipment: equipment._id,
+      status: 'active',
+    });
+    if (activeCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete: ${activeCount} active booking(s) exist for this equipment`,
+      });
+    }
+
+    // Warn (but allow) if there are pending bookings
+    const pendingCount = await Booking.countDocuments({
+      equipment: equipment._id,
+      status: 'pending',
+    });
+
     if (equipment.image) deleteUploadedFile(equipment.image);
     await equipment.deleteOne();
 
-    return res.json({ success: true, message: 'Equipment deleted' });
+    return res.json({
+      success: true,
+      message: 'Equipment deleted',
+      warning:
+        pendingCount > 0
+          ? `${pendingCount} pending booking(s) referenced this equipment`
+          : undefined,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  GET /api/equipment/:id/history
+// @desc   Rental history for an equipment item (admin)
+// @access Private/Admin
+exports.getEquipmentHistory = async (req, res, next) => {
+  try {
+    const equipment = await Equipment.findById(req.params.id);
+    if (!equipment) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Equipment not found' });
+    }
+
+    const bookings = await Booking.find({ equipment: req.params.id })
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      success: true,
+      equipment,
+      count: bookings.length,
+      bookings,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  PUT /api/equipment/:id/availability
+// @desc   Quick toggle of availability (admin)
+// @access Private/Admin
+exports.toggleAvailability = async (req, res, next) => {
+  try {
+    const { available } = req.body;
+    if (typeof available !== 'boolean') {
+      return res
+        .status(400)
+        .json({ success: false, message: 'available (boolean) is required' });
+    }
+
+    const equipment = await Equipment.findByIdAndUpdate(
+      req.params.id,
+      { available },
+      { new: true }
+    );
+    if (!equipment) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Equipment not found' });
+    }
+
+    return res.json({ success: true, equipment });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  POST /api/equipment/bulk-update
+// @desc   Update multiple equipment items (admin)
+// @access Private/Admin
+exports.bulkUpdate = async (req, res, next) => {
+  try {
+    const { ids, updates } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'ids must be a non-empty array' });
+    }
+    if (!updates || typeof updates !== 'object') {
+      return res
+        .status(400)
+        .json({ success: false, message: 'updates object is required' });
+    }
+
+    // Whitelist updatable fields
+    const allowed = ['available', 'category', 'dailyRate', 'quantity', 'description'];
+    const sanitized = {};
+    Object.keys(updates).forEach((k) => {
+      if (allowed.includes(k)) sanitized[k] = updates[k];
+    });
+
+    const result = await Equipment.updateMany(
+      { _id: { $in: ids } },
+      { $set: sanitized }
+    );
+
+    return res.json({
+      success: true,
+      matched: result.matchedCount,
+      modified: result.modifiedCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route  DELETE /api/equipment/bulk-delete
+// @desc   Delete multiple equipment items (admin), skipping any with active bookings
+// @access Private/Admin
+exports.bulkDelete = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'ids must be a non-empty array' });
+    }
+
+    const items = await Equipment.find({ _id: { $in: ids } });
+    const deleted = [];
+    const skipped = [];
+
+    for (const item of items) {
+      const activeCount = await Booking.countDocuments({
+        equipment: item._id,
+        status: 'active',
+      });
+      if (activeCount > 0) {
+        skipped.push({ id: item._id, reason: 'has active bookings' });
+        continue;
+      }
+      if (item.image) deleteUploadedFile(item.image);
+      await item.deleteOne();
+      deleted.push(item._id);
+    }
+
+    return res.json({
+      success: true,
+      deletedCount: deleted.length,
+      deleted,
+      skipped,
+    });
   } catch (error) {
     next(error);
   }
