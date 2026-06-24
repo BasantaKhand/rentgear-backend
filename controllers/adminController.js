@@ -191,6 +191,124 @@ async function computeCategoryStats() {
   }));
 }
 
+// Build a map of per-equipment stats: bookingCount, revenue, avgDurationDays
+async function computeEquipmentStatsMap() {
+  const bookingColl = Booking.collection.name;
+
+  const bookingAgg = await Booking.aggregate([
+    {
+      $group: {
+        _id: '$equipment',
+        bookingCount: { $sum: 1 },
+        avgDurationMs: { $avg: { $subtract: ['$endDate', '$startDate'] } },
+      },
+    },
+  ]);
+
+  const revenueAgg = await Payment.aggregate([
+    { $match: { status: 'completed' } },
+    {
+      $lookup: {
+        from: bookingColl,
+        localField: 'booking',
+        foreignField: '_id',
+        as: 'bk',
+      },
+    },
+    { $unwind: '$bk' },
+    { $group: { _id: '$bk.equipment', revenue: { $sum: '$amount' } } },
+  ]);
+
+  const map = {};
+  bookingAgg.forEach((b) => {
+    map[b._id.toString()] = {
+      bookingCount: b.bookingCount,
+      revenue: 0,
+      avgRentalDuration: b.avgDurationMs
+        ? Math.round(b.avgDurationMs / (1000 * 60 * 60 * 24))
+        : 0,
+    };
+  });
+  revenueAgg.forEach((r) => {
+    const key = r._id.toString();
+    if (!map[key]) map[key] = { bookingCount: 0, avgRentalDuration: 0, revenue: 0 };
+    map[key].revenue = r.revenue;
+  });
+  return map;
+}
+
+// @route GET /api/admin/equipment
+// @desc  All equipment with booking count + revenue, paginated (admin)
+exports.getAdminEquipment = async (req, res, next) => {
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit, 10) || 12, 1);
+    const skip = (page - 1) * limit;
+
+    const [items, total, statsMap] = await Promise.all([
+      Equipment.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Equipment.countDocuments(),
+      computeEquipmentStatsMap(),
+    ]);
+
+    const equipment = items.map((e) => {
+      const s = statsMap[e._id.toString()] || {
+        bookingCount: 0,
+        revenue: 0,
+        avgRentalDuration: 0,
+      };
+      return { ...e, ...s };
+    });
+
+    // Most popular across the whole catalogue
+    let mostPopular = null;
+    Object.entries(statsMap).forEach(([id, s]) => {
+      if (!mostPopular || s.bookingCount > mostPopular.bookingCount) {
+        mostPopular = { id, bookingCount: s.bookingCount, revenue: s.revenue };
+      }
+    });
+
+    return res.json({
+      success: true,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      count: equipment.length,
+      mostPopular,
+      equipment,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route GET /api/admin/equipment/low-stock
+// @desc  Equipment where quantity - active bookings <= 1 (admin)
+exports.getLowStockEquipment = async (req, res, next) => {
+  try {
+    const activeAgg = await Booking.aggregate([
+      { $match: { status: 'active' } },
+      { $group: { _id: '$equipment', active: { $sum: 1 } } },
+    ]);
+    const activeMap = activeAgg.reduce((acc, cur) => {
+      acc[cur._id.toString()] = cur.active;
+      return acc;
+    }, {});
+
+    const items = await Equipment.find().lean();
+    const lowStock = items
+      .map((e) => {
+        const active = activeMap[e._id.toString()] || 0;
+        return { ...e, activeBookings: active, remaining: e.quantity - active };
+      })
+      .filter((e) => e.remaining <= 1);
+
+    return res.json({ success: true, count: lowStock.length, equipment: lowStock });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ---- Route handlers ----
 
 // @route GET /api/admin/stats
