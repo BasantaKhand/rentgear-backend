@@ -10,6 +10,10 @@ const {
   deleteEquipment,
   checkAvailability,
   seedEquipment,
+  getEquipmentHistory,
+  toggleAvailability,
+  bulkUpdate,
+  bulkDelete,
 } = require('../controllers/equipmentController');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
@@ -23,6 +27,14 @@ router.get('/', getEquipment);
 
 // Admin: seed sample data (declared before "/:id" so it isn't treated as an id)
 router.post('/seed', auth, admin, seedEquipment);
+
+// Admin: bulk operations (declared before "/:id" routes)
+router.post('/bulk-update', auth, admin, bulkUpdate);
+router.delete('/bulk-delete', auth, admin, bulkDelete);
+
+// Admin: rental history + availability toggle
+router.get('/:id/history', auth, admin, getEquipmentHistory);
+router.put('/:id/availability', auth, admin, toggleAvailability);
 
 // Public: availability check for a date range
 router.get('/:id/availability', checkAvailability);
