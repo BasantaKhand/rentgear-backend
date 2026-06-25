@@ -39,6 +39,14 @@ const bookingSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  pickedUpAt: {
+    type: Date,
+    default: null,
+  },
+  returnedAt: {
+    type: Date,
+    default: null,
+  },
   extensionHistory: [
     {
       previousEndDate: Date,
