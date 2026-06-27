@@ -19,6 +19,16 @@ const {
   getPendingCount,
   getOverdueBookings,
 } = require('../controllers/adminBookingController');
+const {
+  getUsers,
+  getUnverifiedUsers,
+  getUserById,
+  verifyUser,
+  toggleDisableUser,
+  changeRole,
+  getUserBookings,
+  getIdDocument,
+} = require('../controllers/adminUserController');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 
@@ -44,5 +54,15 @@ router.put('/bookings/:id/reject', rejectBooking);
 router.put('/bookings/:id/pickup', markPickup);
 router.put('/bookings/:id/return', returnBooking);
 router.put('/bookings/:id/late-fee', applyLateFee);
+
+// User management (literal paths before ":id" routes)
+router.get('/users/unverified', getUnverifiedUsers);
+router.get('/users', getUsers);
+router.get('/users/:id', getUserById);
+router.get('/users/:id/bookings', getUserBookings);
+router.get('/users/:id/id-document', getIdDocument);
+router.put('/users/:id/verify', verifyUser);
+router.put('/users/:id/disable', toggleDisableUser);
+router.put('/users/:id/role', changeRole);
 
 module.exports = router;
