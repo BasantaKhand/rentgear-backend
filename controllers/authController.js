@@ -13,6 +13,7 @@ const sanitizeUser = (user) => ({
   address: user.address,
   role: user.role,
   verified: user.verified,
+  isActive: user.isActive !== false,
   idDocument: user.idDocument,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
@@ -83,6 +84,13 @@ exports.login = async (req, res, next) => {
       return res
         .status(401)
         .json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // Deny login for disabled accounts
+    if (user.isActive === false) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Account has been disabled' });
     }
 
     const token = generateToken(user._id);
