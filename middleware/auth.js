@@ -24,6 +24,13 @@ const auth = async (req, res, next) => {
         .json({ success: false, message: 'Not authorized' });
     }
 
+    // Deny access to disabled accounts
+    if (user.isActive === false) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Account has been disabled' });
+    }
+
     req.user = user;
     next();
   } catch (error) {
