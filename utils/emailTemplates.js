@@ -106,6 +106,18 @@ exports.returnReminder = (booking) => {
   };
 };
 
+// 6. ID verification confirmation
+exports.idVerified = (user) => ({
+  subject: 'Your RentGear account is verified',
+  text: `Hi ${user.name}, your ID has been verified. You're all set to rent equipment.`,
+  html: layout(
+    'Account Verified',
+    `<p>Hi ${user.name},</p>
+     <p>Your uploaded ID has been reviewed and your account is now <strong>verified</strong>.</p>
+     <p>You're all set to rent equipment on RentGear.</p>`
+  ),
+});
+
 // 5. Payment receipt
 exports.paymentReceipt = (payment, booking) => ({
   subject: `Payment Receipt - ${(payment._id || '').toString().slice(-6).toUpperCase()}`,
