@@ -29,6 +29,13 @@ const {
   getUserBookings,
   getIdDocument,
 } = require('../controllers/adminUserController');
+const {
+  bookingsReport,
+  revenueReport,
+  equipmentReport,
+  usersReport,
+  summaryReport,
+} = require('../controllers/reportsController');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 
@@ -64,5 +71,12 @@ router.get('/users/:id/id-document', getIdDocument);
 router.put('/users/:id/verify', verifyUser);
 router.put('/users/:id/disable', toggleDisableUser);
 router.put('/users/:id/role', changeRole);
+
+// Reports
+router.get('/reports/bookings', bookingsReport);
+router.get('/reports/revenue', revenueReport);
+router.get('/reports/equipment', equipmentReport);
+router.get('/reports/users', usersReport);
+router.get('/reports/summary', summaryReport);
 
 module.exports = router;
