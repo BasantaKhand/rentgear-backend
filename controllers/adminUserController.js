@@ -4,6 +4,7 @@ const Booking = require('../models/Booking');
 const Payment = require('../models/Payment');
 const { sendEmail } = require('../config/email');
 const { idVerified } = require('../utils/emailTemplates');
+const { notify } = require('../utils/notify');
 
 // Sum of completed payments across a set of booking ids
 async function totalSpent(bookingIds) {
@@ -107,6 +108,12 @@ exports.verifyUser = async (req, res, next) => {
     await user.save();
 
     sendEmail({ to: user.email, ...idVerified(user) }).catch(() => {});
+    notify(user._id, {
+      title: 'Account verified',
+      message: 'Your ID has been verified. You can now rent equipment.',
+      type: 'success',
+      link: '/profile',
+    });
 
     return res.json({ success: true, user });
   } catch (error) {
