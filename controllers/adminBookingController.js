@@ -9,8 +9,11 @@ const {
   paymentReceipt,
 } = require('../utils/emailTemplates');
 const { calculateOverdue, startOfDay } = require('../utils/helpers');
+const { notify } = require('../utils/notify');
 
-// Notify the booking owner of a status change (non-blocking)
+const shortRef = (id) => `#BK-${id.toString().slice(-4).toUpperCase()}`;
+
+// Notify the booking owner of a status change (email + in-app, non-blocking)
 async function notifyStatus(booking) {
   const user = await User.findById(booking.user).select('email');
   if (user && user.email) {
@@ -18,6 +21,12 @@ async function notifyStatus(booking) {
       () => {}
     );
   }
+  notify(booking.user, {
+    title: `Booking ${booking.status}`,
+    message: `${shortRef(booking._id)} is now ${booking.status}.`,
+    type: 'booking',
+    link: '/my-bookings',
+  });
 }
 
 // @route GET /api/admin/bookings
@@ -194,6 +203,12 @@ exports.rejectBooking = async (req, res, next) => {
         : base;
       sendEmail({ to: user.email, ...withReason }).catch(() => {});
     }
+    notify(booking.user, {
+      title: 'Booking rejected',
+      message: `${shortRef(booking._id)} was rejected${reason ? `: ${reason}` : ''}.`,
+      type: 'warning',
+      link: '/my-bookings',
+    });
 
     await booking.populate('equipment');
     return res.json({ success: true, booking, reason: reason || null });
@@ -258,6 +273,12 @@ exports.returnBooking = async (req, res, next) => {
         sendEmail({ to: user.email, ...paymentReceipt(payment, booking) }).catch(() => {});
       }
     }
+    notify(booking.user, {
+      title: 'Rental completed',
+      message: `${shortRef(booking._id)} returned${booking.lateFee > 0 ? ` with a $${booking.lateFee.toFixed(2)} late fee` : ''}.`,
+      type: 'booking',
+      link: '/my-bookings',
+    });
 
     return res.json({ success: true, booking, lateFeeApplied: booking.lateFee });
   } catch (error) {
