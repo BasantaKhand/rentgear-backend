@@ -14,6 +14,7 @@ const bookingRoutes = require('./routes/bookings');
 const paymentRoutes = require('./routes/payments');
 const adminRoutes = require('./routes/admin');
 const testRoutes = require('./routes/test');
+const notificationRoutes = require('./routes/notifications');
 
 const app = express();
 
@@ -65,6 +66,7 @@ app.use('/api/bookings', bookingRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/test', testRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);
