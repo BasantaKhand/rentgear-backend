@@ -3,6 +3,7 @@ const Booking = require('../models/Booking');
 const { simulatePayment } = require('../utils/helpers');
 const { sendEmail } = require('../config/email');
 const { paymentReceipt } = require('../utils/emailTemplates');
+const { notify } = require('../utils/notify');
 
 // Reusable: create and settle a payment for a booking.
 // - card: simulate the gateway; on success mark payment completed and
@@ -84,6 +85,12 @@ exports.createPayment = async (req, res, next) => {
         to: req.user.email,
         ...paymentReceipt(payment, booking),
       }).catch(() => {});
+      notify(req.user._id, {
+        title: 'Payment received',
+        message: `We received your payment of $${payment.amount.toFixed(2)}.`,
+        type: 'payment',
+        link: '/my-bookings',
+      });
     }
 
     return res.status(201).json({ success: true, payment });
