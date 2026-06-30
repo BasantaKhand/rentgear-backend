@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { generateToken } = require('../utils/helpers');
 const { sendEmail } = require('../config/email');
 const { welcomeEmail } = require('../utils/emailTemplates');
+const { notify, notifyAdmins } = require('../utils/notify');
 
 // Build a safe user object without the password field
 const sanitizeUser = (user) => ({
@@ -51,6 +52,20 @@ exports.register = async (req, res, next) => {
 
     // Send welcome email (non-blocking, must not fail registration)
     sendEmail({ to: user.email, ...welcomeEmail(user) }).catch(() => {});
+
+    // In-app notifications: welcome the user, alert admins
+    notify(user._id, {
+      title: 'Welcome to RentGear',
+      message: 'Your account is ready. Browse equipment to get started.',
+      type: 'success',
+      link: '/equipment',
+    });
+    notifyAdmins({
+      title: 'New user registered',
+      message: `${user.name} (${user.email}) just signed up.`,
+      type: 'user',
+      link: '/admin/users',
+    });
 
     return res.status(201).json({
       success: true,
