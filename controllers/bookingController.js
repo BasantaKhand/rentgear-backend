@@ -16,6 +16,9 @@ const {
   bookingStatusUpdate,
   paymentReceipt,
 } = require('../utils/emailTemplates');
+const { notify, notifyAdmins } = require('../utils/notify');
+
+const shortRef = (id) => `#BK-${id.toString().slice(-4).toUpperCase()}`;
 
 // Validate a single booking's dates. Returns an error string or null.
 function validateDates(startDate, endDate) {
@@ -177,6 +180,20 @@ exports.checkout = async (req, res, next) => {
             ...paymentReceipt(payment, populated),
           }).catch(() => {});
         }
+
+        // In-app notifications
+        notify(req.user._id, {
+          title: 'Booking confirmed',
+          message: `${shortRef(populated._id)} for ${populated.equipment?.name} is booked.`,
+          type: 'booking',
+          link: '/my-bookings',
+        });
+        notifyAdmins({
+          title: 'New booking',
+          message: `${req.user.name} booked ${populated.equipment?.name} (${shortRef(populated._id)}).`,
+          type: 'booking',
+          link: '/admin/bookings',
+        });
       }
     }
 
@@ -278,6 +295,12 @@ exports.cancelBooking = async (req, res, next) => {
       to: req.user.email,
       ...bookingStatusUpdate(booking, 'cancelled'),
     }).catch(() => {});
+    notify(req.user._id, {
+      title: 'Booking cancelled',
+      message: `${shortRef(booking._id)} has been cancelled.`,
+      type: 'warning',
+      link: '/my-bookings',
+    });
 
     return res.json({ success: true, booking });
   } catch (error) {
