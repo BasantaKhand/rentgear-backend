@@ -1,6 +1,11 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
+const { validatePassword } = require('../utils/passwordPolicy');
+
+const BCRYPT_ROUNDS = 12;
+const PASSWORD_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const MAX_HISTORY = 5;
 
 // Build a safe user object without the password field
 const sanitizeUser = (user) => ({
@@ -109,8 +114,10 @@ exports.changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    // Need the password field which is excluded by default
-    const user = await User.findById(req.user._id).select('+password');
+    // Need password + history which are excluded by default
+    const user = await User.findById(req.user._id).select(
+      '+password +passwordHistory'
+    );
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -122,8 +129,37 @@ exports.changePassword = async (req, res, next) => {
         .json({ success: false, message: 'Current password is incorrect' });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
+    // Enforce the strength policy
+    const policy = validatePassword(newPassword, {
+      name: user.name,
+      email: user.email,
+    });
+    if (!policy.valid) {
+      return res
+        .status(400)
+        .json({ success: false, message: policy.errors[0], errors: policy.errors });
+    }
+
+    // Reuse prevention: reject if it matches the current or any of the last 5
+    const history = user.passwordHistory && user.passwordHistory.length
+      ? user.passwordHistory
+      : [user.password];
+    for (const oldHash of history) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await bcrypt.compare(newPassword, oldHash)) {
+        return res.status(400).json({
+          success: false,
+          message: 'You cannot reuse a recent password',
+        });
+      }
+    }
+
+    const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    user.password = newHash;
+    user.passwordChangedAt = new Date();
+    user.passwordExpiresAt = new Date(Date.now() + PASSWORD_TTL_MS);
+    // Keep the most recent MAX_HISTORY hashes (newest first)
+    user.passwordHistory = [newHash, ...history].slice(0, MAX_HISTORY);
     await user.save();
 
     return res.json({
