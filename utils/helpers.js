@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const Booking = require('../models/Booking');
@@ -56,11 +57,38 @@ const deleteUploadedFile = (publicPath) => {
   });
 };
 
-// Generate a signed JWT for a user id
+// Generate a signed JWT for a user id (legacy long-lived token, kept for compat)
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || '7d',
   });
+};
+
+// Short-lived access token (default 15 minutes)
+const generateAccessToken = (id) => {
+  return jwt.sign({ id, type: 'access' }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_ACCESS_EXPIRE || '15m',
+  });
+};
+
+// Long-lived refresh token (default 7 days), signed with a separate secret.
+// `sid` binds the token to a Session document; `tv` is the user's tokenVersion
+// (used to invalidate all tokens on "logout everywhere").
+const generateRefreshToken = (id, { sid, tv = 0 } = {}) => {
+  return jwt.sign(
+    // jti gives every token unique bytes so rotation always yields a fresh
+    // token (even within the same second) and reuse can be detected by hash.
+    { id, type: 'refresh', ...(sid && { sid }), tv, jti: crypto.randomBytes(16).toString('hex') },
+    process.env.JWT_REFRESH_SECRET || `${process.env.JWT_SECRET}_refresh`,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d' }
+  );
+};
+
+const verifyRefreshToken = (token) => {
+  return jwt.verify(
+    token,
+    process.env.JWT_REFRESH_SECRET || `${process.env.JWT_SECRET}_refresh`
+  );
 };
 
 // Calculate the number of rental days between two dates (inclusive of start day)
@@ -156,6 +184,9 @@ const getReturnInstructions = () => ({
 
 module.exports = {
   generateToken,
+  generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
   calculateDays,
   calculateTotalPrice,
   generateTransactionId,
