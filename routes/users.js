@@ -1,5 +1,4 @@
 const express = require('express');
-const { body } = require('express-validator');
 const router = express.Router();
 
 const {
@@ -11,37 +10,22 @@ const {
 } = require('../controllers/userController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { uploadId, handleUpload } = require('../middleware/upload');
+const { uploadId, handleUpload, processUpload } = require('../middleware/upload');
+const { passwordResetLimiter } = require('../middleware/rateLimiter');
+const { profileUpdateRules, changePasswordRules } = require('../middleware/validator');
 
 // @route  GET /api/users/profile
 router.get('/profile', auth, getProfile);
 
 // @route  PUT /api/users/profile
-router.put(
-  '/profile',
-  auth,
-  [
-    body('name')
-      .optional()
-      .trim()
-      .notEmpty()
-      .withMessage('Name cannot be empty'),
-    body('phone')
-      .optional()
-      .trim()
-      .notEmpty()
-      .withMessage('Phone cannot be empty'),
-    body('address').optional().trim(),
-  ],
-  validate,
-  updateProfile
-);
+router.put('/profile', auth, profileUpdateRules, validate, updateProfile);
 
 // @route  POST /api/users/upload-id
 router.post(
   '/upload-id',
   auth,
   handleUpload(uploadId.single('idDocument')),
+  processUpload('ids'),
   uploadIdDocument
 );
 
@@ -52,14 +36,8 @@ router.get('/rental-history', auth, getRentalHistory);
 router.put(
   '/change-password',
   auth,
-  [
-    body('currentPassword')
-      .notEmpty()
-      .withMessage('Current password is required'),
-    body('newPassword')
-      .isLength({ min: 6 })
-      .withMessage('New password must be at least 6 characters'),
-  ],
+  passwordResetLimiter,
+  changePasswordRules,
   validate,
   changePassword
 );
