@@ -36,8 +36,15 @@ const {
   usersReport,
   summaryReport,
 } = require('../controllers/reportsController');
+const {
+  getBlockedIps,
+  blockIpAddress,
+  unblockIpAddress,
+} = require('../controllers/adminSecurityController');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
+const { adminActionLimiter } = require('../middleware/rateLimiter');
+const { isValidObjectId } = require('../middleware/validator');
 
 // All admin routes require an authenticated admin
 router.use(auth, admin);
@@ -56,21 +63,26 @@ router.get('/equipment', getAdminEquipment);
 router.get('/bookings/pending-count', getPendingCount);
 router.get('/bookings/overdue', getOverdueBookings);
 router.get('/bookings', getAdminBookings);
-router.put('/bookings/:id/approve', approveBooking);
-router.put('/bookings/:id/reject', rejectBooking);
-router.put('/bookings/:id/pickup', markPickup);
-router.put('/bookings/:id/return', returnBooking);
-router.put('/bookings/:id/late-fee', applyLateFee);
+router.put('/bookings/:id/approve', adminActionLimiter, isValidObjectId('id'), approveBooking);
+router.put('/bookings/:id/reject', adminActionLimiter, isValidObjectId('id'), rejectBooking);
+router.put('/bookings/:id/pickup', adminActionLimiter, isValidObjectId('id'), markPickup);
+router.put('/bookings/:id/return', adminActionLimiter, isValidObjectId('id'), returnBooking);
+router.put('/bookings/:id/late-fee', adminActionLimiter, isValidObjectId('id'), applyLateFee);
 
 // User management (literal paths before ":id" routes)
 router.get('/users/unverified', getUnverifiedUsers);
 router.get('/users', getUsers);
-router.get('/users/:id', getUserById);
-router.get('/users/:id/bookings', getUserBookings);
-router.get('/users/:id/id-document', getIdDocument);
-router.put('/users/:id/verify', verifyUser);
-router.put('/users/:id/disable', toggleDisableUser);
-router.put('/users/:id/role', changeRole);
+router.get('/users/:id', isValidObjectId('id'), getUserById);
+router.get('/users/:id/bookings', isValidObjectId('id'), getUserBookings);
+router.get('/users/:id/id-document', isValidObjectId('id'), getIdDocument);
+router.put('/users/:id/verify', adminActionLimiter, isValidObjectId('id'), verifyUser);
+router.put('/users/:id/disable', adminActionLimiter, isValidObjectId('id'), toggleDisableUser);
+router.put('/users/:id/role', adminActionLimiter, isValidObjectId('id'), changeRole);
+
+// Security / IP management
+router.get('/security/blocked-ips', getBlockedIps);
+router.post('/security/block-ip', adminActionLimiter, blockIpAddress);
+router.delete('/security/unblock-ip', adminActionLimiter, unblockIpAddress);
 
 // Reports
 router.get('/reports/bookings', bookingsReport);
