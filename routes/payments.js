@@ -11,22 +11,13 @@ const {
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const validate = require('../middleware/validate');
+const { paymentCreateRules, isValidObjectId } = require('../middleware/validator');
 
 // All payment routes require authentication
 router.use(auth);
 
 // @route  POST /api/payments
-router.post(
-  '/',
-  [
-    body('bookingId').isMongoId().withMessage('Valid bookingId is required'),
-    body('method')
-      .isIn(['card', 'cash'])
-      .withMessage('Method must be card or cash'),
-  ],
-  validate,
-  createPayment
-);
+router.post('/', paymentCreateRules, validate, createPayment);
 
 // @route  GET /api/payments/my  (declared before "/:bookingId")
 router.get('/my', getMyPayments);
@@ -35,12 +26,13 @@ router.get('/my', getMyPayments);
 router.put(
   '/:id/status',
   admin,
+  isValidObjectId('id'),
   [body('status').notEmpty().withMessage('Status is required')],
   validate,
   updatePaymentStatus
 );
 
 // @route  GET /api/payments/:bookingId
-router.get('/:bookingId', getPaymentByBooking);
+router.get('/:bookingId', isValidObjectId('bookingId'), getPaymentByBooking);
 
 module.exports = router;
