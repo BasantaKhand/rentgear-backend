@@ -29,6 +29,16 @@ const errorHandler = (err, req, res, next) => {
   // Multer errors
   if (err.name === 'MulterError') {
     statusCode = 400;
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      statusCode = 413;
+      message = 'File too large. Maximum allowed size is 5MB.';
+    }
+  }
+
+  // Body larger than the configured limit (express.json / urlencoded)
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    statusCode = 413;
+    message = 'Request payload too large.';
   }
 
   // JWT errors
