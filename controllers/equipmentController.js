@@ -1,41 +1,58 @@
 const Equipment = require('../models/Equipment');
 const Booking = require('../models/Booking');
 const { deleteUploadedFile } = require('../utils/helpers');
+const { escapeRegex } = require('../middleware/validator');
+
+// Take the last value if a query param arrived as an array (parameter pollution)
+const one = (v) => (Array.isArray(v) ? v[v.length - 1] : v);
+// Coerce to a finite number or return undefined (never NaN into a query).
+const num = (v) => {
+  const n = Number(one(v));
+  return Number.isFinite(n) ? n : undefined;
+};
 
 // @route  GET /api/equipment
 // @desc   List equipment with filtering, search and pagination
 // @access Public
 exports.getEquipment = async (req, res, next) => {
   try {
-    const { category, minPrice, maxPrice, available, search } = req.query;
+    const category = one(req.query.category);
+    const available = one(req.query.available);
+    const search = one(req.query.search);
 
     const filter = {};
 
-    if (category) filter.category = category;
+    // Category is only accepted when it's a known enum value (string).
+    if (typeof category === 'string' && category) filter.category = category;
 
+    const minPrice = num(req.query.minPrice);
+    const maxPrice = num(req.query.maxPrice);
     if (minPrice !== undefined || maxPrice !== undefined) {
       filter.dailyRate = {};
-      if (minPrice !== undefined) filter.dailyRate.$gte = Number(minPrice);
-      if (maxPrice !== undefined) filter.dailyRate.$lte = Number(maxPrice);
+      if (minPrice !== undefined) filter.dailyRate.$gte = minPrice;
+      if (maxPrice !== undefined) filter.dailyRate.$lte = maxPrice;
     }
 
     if (available !== undefined) {
       filter.available = available === 'true';
     }
 
-    if (search) {
+    // Escape regex metacharacters and cap length to prevent ReDoS / injection.
+    if (typeof search === 'string' && search.trim()) {
+      const safe = escapeRegex(search.trim().slice(0, 100));
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
+        { name: { $regex: safe, $options: 'i' } },
+        { description: { $regex: safe, $options: 'i' } },
       ];
     }
 
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = Math.max(parseInt(req.query.limit, 10) || 12, 1);
+    // Pagination is validated/clamped by middleware; re-clamp defensively here.
+    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), 100);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 50);
     const skip = (page - 1) * limit;
 
     const [equipment, total] = await Promise.all([
-      Equipment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Equipment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Equipment.countDocuments(filter),
     ]);
 
