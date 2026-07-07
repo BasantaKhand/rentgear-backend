@@ -9,9 +9,12 @@ const {
   updatePaymentStatus,
 } = require('../controllers/paymentController');
 const auth = require('../middleware/auth');
-const admin = require('../middleware/admin');
+const { authorize } = require('../middleware/rbac');
+const { verifyPaymentBookingOwnership } = require('../middleware/ownership');
 const validate = require('../middleware/validate');
 const { paymentCreateRules, isValidObjectId } = require('../middleware/validator');
+
+const admin = authorize('admin');
 
 // All payment routes require authentication
 router.use(auth);
@@ -32,7 +35,12 @@ router.put(
   updatePaymentStatus
 );
 
-// @route  GET /api/payments/:bookingId
-router.get('/:bookingId', isValidObjectId('bookingId'), getPaymentByBooking);
+// @route  GET /api/payments/:bookingId  (owner or admin)
+router.get(
+  '/:bookingId',
+  isValidObjectId('bookingId'),
+  verifyPaymentBookingOwnership('bookingId'),
+  getPaymentByBooking
+);
 
 module.exports = router;
