@@ -42,12 +42,12 @@ const {
   unblockIpAddress,
 } = require('../controllers/adminSecurityController');
 const auth = require('../middleware/auth');
-const admin = require('../middleware/admin');
+const { authorize } = require('../middleware/rbac');
 const { adminActionLimiter } = require('../middleware/rateLimiter');
 const { isValidObjectId } = require('../middleware/validator');
 
-// All admin routes require an authenticated admin
-router.use(auth, admin);
+// All admin routes require an authenticated admin (violations are logged)
+router.use(auth, authorize('admin'));
 
 router.get('/stats', getStats);
 router.get('/recent-bookings', getRecentBookings);
