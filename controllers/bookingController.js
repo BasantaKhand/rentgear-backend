@@ -10,6 +10,8 @@ const {
   getReturnInstructions,
 } = require('../utils/helpers');
 const { buildInvoiceData, streamInvoicePDF } = require('../utils/invoiceGenerator');
+const { filterBody } = require('../utils/filterBody');
+const { logSecurityEvent } = require('../utils/securityLog');
 const { sendEmail } = require('../config/email');
 const {
   bookingConfirmation,
@@ -83,7 +85,21 @@ async function buildBooking(userId, equipmentId, startDate, endDate) {
 // @access Private
 exports.createBooking = async (req, res, next) => {
   try {
-    const { equipmentId, startDate, endDate } = req.body;
+    // Only these fields are honored; price, deposit, status and user are always
+    // set by the server. Log any attempt to pass restricted fields.
+    const { filtered, stripped } = filterBody(
+      req.body,
+      'equipmentId',
+      'startDate',
+      'endDate'
+    );
+    if (stripped.length) {
+      logSecurityEvent('MASS_ASSIGNMENT', req, {
+        endpointGroup: 'booking',
+        strippedFields: stripped,
+      });
+    }
+    const { equipmentId, startDate, endDate } = filtered;
 
     const result = await buildBooking(
       req.user._id,
