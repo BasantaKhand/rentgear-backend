@@ -2,6 +2,8 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const { validatePassword } = require('../utils/passwordPolicy');
+const { filterBody } = require('../utils/filterBody');
+const { logSecurityEvent } = require('../utils/securityLog');
 
 const BCRYPT_ROUNDS = 12;
 const PASSWORD_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -41,17 +43,25 @@ exports.getProfile = async (req, res, next) => {
 // @access Private
 exports.updateProfile = async (req, res, next) => {
   try {
-    const { name, phone, address } = req.body;
+    // Mass-assignment protection: accept only these fields; anything else
+    // (role, verified, isActive, passwordHistory, ...) is stripped and logged.
+    const { filtered, stripped } = filterBody(req.body, 'name', 'phone', 'address');
+    if (stripped.length) {
+      logSecurityEvent('MASS_ASSIGNMENT', req, {
+        endpointGroup: 'profile',
+        strippedFields: stripped,
+      });
+    }
 
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Update only the fields that were provided
-    if (name !== undefined) user.name = name;
-    if (phone !== undefined) user.phone = phone;
-    if (address !== undefined) user.address = address;
+    // Update only the whitelisted fields that were provided
+    if (filtered.name !== undefined) user.name = filtered.name;
+    if (filtered.phone !== undefined) user.phone = filtered.phone;
+    if (filtered.address !== undefined) user.address = filtered.address;
 
     await user.save();
 
