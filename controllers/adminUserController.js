@@ -5,6 +5,7 @@ const Payment = require('../models/Payment');
 const { sendEmail } = require('../config/email');
 const { idVerified } = require('../utils/emailTemplates');
 const { notify } = require('../utils/notify');
+const { logSecurityEvent } = require('../utils/securityLog');
 
 // Sum of completed payments across a set of booking ids
 async function totalSpent(bookingIds) {
@@ -176,16 +177,23 @@ exports.changeRole = async (req, res, next) => {
         .json({ success: false, message: 'You cannot change your own role' });
     }
 
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { role },
-      { new: true }
-    );
-    if (!user) {
+    const target = await User.findById(req.params.id);
+    if (!target) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    return res.json({ success: true, user });
+    const previousRole = target.role;
+    target.role = role;
+    await target.save();
+
+    // Audit every role change (privilege escalation is a high-value event).
+    logSecurityEvent('ROLE_CHANGE', req, {
+      targetUserId: String(target._id),
+      previousRole,
+      newRole: role,
+    });
+
+    return res.json({ success: true, user: target });
   } catch (error) {
     next(error);
   }
