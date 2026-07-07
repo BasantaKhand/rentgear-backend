@@ -15,7 +15,7 @@ const {
   bulkDelete,
 } = require('../controllers/equipmentController');
 const auth = require('../middleware/auth');
-const admin = require('../middleware/admin');
+const { authorize } = require('../middleware/rbac');
 const validate = require('../middleware/validate');
 const { uploadEquipment, handleUpload, processUpload } = require('../middleware/upload');
 const {
@@ -24,6 +24,9 @@ const {
   paginationRules,
   isValidObjectId,
 } = require('../middleware/validator');
+
+// Admin-only guard (logs unauthorized attempts)
+const admin = authorize('admin');
 
 // Public: list with filters + pagination
 router.get('/', paginationRules, validate, getEquipment);
