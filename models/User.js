@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 const userSchema = new mongoose.Schema(
   {
@@ -20,17 +21,24 @@ const userSchema = new mongoose.Schema(
       minlength: 6,
       select: false,
     },
+    // Sensitive fields are encrypted at rest via AES-256-GCM getters/setters.
     phone: {
       type: String,
       trim: true,
+      set: encrypt,
+      get: decrypt,
     },
     address: {
       type: String,
       trim: true,
+      set: encrypt,
+      get: decrypt,
     },
     idDocument: {
-      type: String, // file path for uploaded ID
+      type: String, // file path for uploaded ID (encrypted at rest)
       default: null,
+      set: encrypt,
+      get: decrypt,
     },
     role: {
       type: String,
@@ -80,17 +88,18 @@ const userSchema = new mongoose.Schema(
 );
 
 // Defense-in-depth: even if a query accidentally selects sensitive fields, never
-// serialize them in a response.
-userSchema.set('toJSON', {
-  transform: (doc, ret) => {
-    delete ret.password;
-    delete ret.passwordHistory;
-    delete ret.tokenVersion;
-    delete ret.failedLoginAttempts;
-    delete ret.lockUntil;
-    delete ret.__v;
-    return ret;
-  },
-});
+// serialize them in a response. `getters: true` ensures encrypted fields are
+// decrypted in JSON output.
+const transform = (doc, ret) => {
+  delete ret.password;
+  delete ret.passwordHistory;
+  delete ret.tokenVersion;
+  delete ret.failedLoginAttempts;
+  delete ret.lockUntil;
+  delete ret.__v;
+  return ret;
+};
+userSchema.set('toJSON', { getters: true, transform });
+userSchema.set('toObject', { getters: true, transform });
 
 module.exports = mongoose.model('User', userSchema);
