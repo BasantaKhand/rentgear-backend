@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
 
 const mongoSanitize = require('express-mongo-sanitize');
 const hpp = require('hpp');
@@ -12,6 +13,7 @@ const errorHandler = require('./middleware/errorHandler');
 const { ipProtection } = require('./middleware/ipProtection');
 const { globalLimiter, apiLimiter } = require('./middleware/rateLimiter');
 const { makeQueryWritable, xssClean } = require('./middleware/sanitize');
+const httpsRedirect = require('./middleware/httpsRedirect');
 
 // Route imports
 const authRoutes = require('./routes/auth');
@@ -33,6 +35,40 @@ app.set('trust proxy', 1);
 // Connect to MongoDB
 connectDB();
 
+// Force HTTPS in production (no-op in development).
+app.use(httpsRedirect);
+
+// --- Security headers (Helmet) ---
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"], // inline styles used by the UI
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        fontSrc: ["'self'", 'https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'", 'http://localhost:5000'],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
+      },
+    },
+    // Allow the frontend (different origin in dev) to load uploaded images.
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: { maxAge: 31536000, includeSubDomains: true },
+    xFrameOptions: { action: 'deny' },
+    xContentTypeOptions: true,
+  })
+);
+// X-XSS-Protection: 0 (explicitly disable the legacy, buggy auditor)
+app.use((req, res, next) => {
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 // Build the list of allowed origins. CLIENT_URL may be a comma-separated list.
 // Vite falls back to 5174/5175 when 5173 is taken, so allow those in dev too.
 const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
@@ -46,7 +82,7 @@ const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
   }
 );
 
-// Middleware
+// --- Strict CORS ---
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -56,7 +92,10 @@ app.use(
       }
       return callback(new Error(`Not allowed by CORS: ${origin}`));
     },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
     credentials: true,
+    maxAge: 86400,
   })
 );
 // Cap request body size to limit abuse (file uploads use multer, not these).
