@@ -13,6 +13,7 @@ const {
 const { validatePassword } = require('../utils/passwordPolicy');
 const { generateCaptcha, verifyCaptcha } = require('../utils/captcha');
 const { setCsrfToken } = require('../middleware/csrf');
+const { recordAudit } = require('../utils/audit');
 const {
   recordFailedLogin,
   clearFailedLogins,
@@ -183,6 +184,12 @@ exports.register = async (req, res, next) => {
       link: '/admin/users',
     });
 
+    req.setAudit?.('REGISTER', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email },
+    });
+
     return res
       .status(201)
       .json({ success: true, accessToken, csrfToken, user: sanitizeUser(user) });
@@ -216,6 +223,11 @@ exports.login = async (req, res, next) => {
     // Locked account?
     if (user && user.lockUntil && user.lockUntil.getTime() > Date.now()) {
       await logAttempt(req, email, false);
+      req.setAudit?.('ACCOUNT_LOCKED', {
+        resource: 'user',
+        resourceId: user._id,
+        details: { email, lockUntil: user.lockUntil },
+      });
       const minutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / 60000);
       return res.status(423).json({
         success: false,
@@ -245,6 +257,13 @@ exports.login = async (req, res, next) => {
         await user.save();
       }
       await logAttempt(req, email, false);
+      req.setAudit?.('LOGIN_FAILED', { details: { email } });
+      // Repeated failures from one IP → flag as suspicious (separate event).
+      if (ipFailures >= 10) {
+        recordAudit('SUSPICIOUS_ACTIVITY', req, {
+          details: { reason: 'repeated failed logins', ipFailures, email },
+        });
+      }
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials',
@@ -266,6 +285,11 @@ exports.login = async (req, res, next) => {
     await user.save();
     clearFailedLogins(ip);
     await logAttempt(req, email, true);
+    req.setAudit?.('LOGIN_SUCCESS', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email },
+    });
 
     const passwordExpired =
       user.passwordExpiresAt && user.passwordExpiresAt.getTime() < Date.now();
@@ -337,6 +361,11 @@ exports.refreshToken = async (req, res, next) => {
     // replayed — treat as compromise and revoke every session for the user.
     if (session.tokenHash !== presentedHash) {
       await Session.updateMany({ user: user._id }, { isActive: false });
+      recordAudit('SUSPICIOUS_ACTIVITY', req, {
+        resource: 'session',
+        resourceId: session._id,
+        details: { reason: 'refresh token reuse detected', userId: String(user._id) },
+      });
       console.warn(
         `[session] refresh token reuse detected for user ${user._id} (sid ${session._id}). ` +
           `All sessions revoked.`
@@ -396,6 +425,7 @@ exports.refreshToken = async (req, res, next) => {
     res.cookie('refreshToken', newRefresh, refreshCookieOptions);
     const csrfToken = setCsrfToken(res);
     const accessToken = generateAccessToken(user._id);
+    req.setAudit?.('TOKEN_REFRESH', { resource: 'user', resourceId: user._id });
     return res.json({ success: true, accessToken, csrfToken, user: sanitizeUser(user) });
   } catch (error) {
     next(error);
@@ -435,6 +465,7 @@ exports.logout = async (req, res, next) => {
       }
     }
     res.clearCookie('refreshToken', { ...refreshCookieOptions, maxAge: undefined });
+    req.setAudit?.('LOGOUT', { resource: 'user', resourceId: req.user?._id });
     return res.json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
     next(error);
