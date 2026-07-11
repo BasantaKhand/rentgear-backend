@@ -38,7 +38,8 @@ const DUMMY_HASH = bcrypt.hashSync('timing-equalizer-not-a-real-password', BCRYP
 
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  // Secure cookies over HTTPS (production or local HTTPS dev).
+  secure: process.env.NODE_ENV === 'production' || process.env.USE_HTTPS === 'true',
   sameSite: 'strict',
   path: '/api/auth',
   signed: true,
