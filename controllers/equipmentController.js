@@ -47,8 +47,8 @@ exports.getEquipment = async (req, res, next) => {
     }
 
     // Pagination is validated/clamped by middleware; re-clamp defensively here.
-    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), 100);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 50);
+    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), 1000);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 100);
     const skip = (page - 1) * limit;
 
     const [equipment, total] = await Promise.all([
