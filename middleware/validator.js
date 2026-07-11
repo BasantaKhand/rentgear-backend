@@ -118,8 +118,8 @@ const isValidObjectId = (paramName = 'id') => (req, res, next) => {
 
 // Clamp pagination + sanitize search into safe values on req.query.
 const paginationRules = [
-  query('page').optional().toInt().isInt({ min: 1, max: 100 }).withMessage('page must be 1-100'),
-  query('limit').optional().toInt().isInt({ min: 1, max: 50 }).withMessage('limit must be 1-50'),
+  query('page').optional().toInt().isInt({ min: 1, max: 1000 }).withMessage('page must be 1-1000'),
+  query('limit').optional().toInt().isInt({ min: 1, max: 100 }).withMessage('limit must be 1-100'),
   query('search').optional().isString().isLength({ max: 100 }).withMessage('search must be at most 100 characters'),
 ];
 
