@@ -108,6 +108,12 @@ exports.verifyUser = async (req, res, next) => {
     user.verified = true;
     await user.save();
 
+    req.setAudit?.('ADMIN_VERIFY_USER', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email },
+    });
+
     sendEmail({ to: user.email, ...idVerified(user) }).catch(() => {});
     notify(user._id, {
       title: 'Account verified',
@@ -150,6 +156,12 @@ exports.toggleDisableUser = async (req, res, next) => {
       cancelledBookings = result.modifiedCount;
     }
 
+    req.setAudit?.('ADMIN_DISABLE_USER', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { isActive: user.isActive, cancelledBookings },
+    });
+
     return res.json({
       success: true,
       user,
@@ -191,6 +203,11 @@ exports.changeRole = async (req, res, next) => {
       targetUserId: String(target._id),
       previousRole,
       newRole: role,
+    });
+    req.setAudit?.('ADMIN_ROLE_CHANGE', {
+      resource: 'user',
+      resourceId: target._id,
+      details: { previousRole, newRole: role },
     });
 
     return res.json({ success: true, user: target });
