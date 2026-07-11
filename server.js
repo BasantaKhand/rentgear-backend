@@ -14,6 +14,7 @@ const { ipProtection } = require('./middleware/ipProtection');
 const { globalLimiter, apiLimiter } = require('./middleware/rateLimiter');
 const { makeQueryWritable, xssClean } = require('./middleware/sanitize');
 const httpsRedirect = require('./middleware/httpsRedirect');
+const auditLogger = require('./middleware/auditLogger');
 
 // Route imports
 const authRoutes = require('./routes/auth');
@@ -102,6 +103,10 @@ app.use(
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser(process.env.COOKIE_SECRET || process.env.JWT_SECRET));
+
+// Audit logging: attach the helper + finish-hook early so even requests blocked
+// by rate limiting or IP protection are recorded.
+app.use(auditLogger);
 
 // --- Input sanitization (must run before routes) ---
 // Make req.query writable so the Express-4-era sanitizers work on Express 5.
