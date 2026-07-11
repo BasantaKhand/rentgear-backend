@@ -79,6 +79,12 @@ exports.createPayment = async (req, res, next) => {
     const payment = await settleBookingPayment(booking, method, transactionId);
     await payment.populate('booking');
 
+    req.setAudit?.('PAYMENT_MADE', {
+      resource: 'payment',
+      resourceId: payment._id,
+      details: { bookingId: String(bookingId), amount: payment.amount, method, status: payment.status },
+    });
+
     // Send a payment receipt (non-blocking) for completed payments
     if (payment.status === 'completed') {
       sendEmail({
