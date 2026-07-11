@@ -41,6 +41,11 @@ const {
   blockIpAddress,
   unblockIpAddress,
 } = require('../controllers/adminSecurityController');
+const {
+  getLogs,
+  getSecurityLogs,
+  getLogStats,
+} = require('../controllers/adminLogsController');
 const auth = require('../middleware/auth');
 const { authorize } = require('../middleware/rbac');
 const { adminActionLimiter } = require('../middleware/rateLimiter');
@@ -83,6 +88,11 @@ router.put('/users/:id/role', adminActionLimiter, isValidObjectId('id'), changeR
 router.get('/security/blocked-ips', getBlockedIps);
 router.post('/security/block-ip', adminActionLimiter, blockIpAddress);
 router.delete('/security/unblock-ip', adminActionLimiter, unblockIpAddress);
+
+// Audit logs (literal /logs/* before any params)
+router.get('/logs/security', getSecurityLogs);
+router.get('/logs/stats', getLogStats);
+router.get('/logs', getLogs);
 
 // Reports
 router.get('/reports/bookings', bookingsReport);
