@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 
@@ -50,7 +52,7 @@ app.use(
         styleSrc: ["'self'", "'unsafe-inline'"], // inline styles used by the UI
         imgSrc: ["'self'", 'data:', 'blob:'],
         fontSrc: ["'self'", 'https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
-        connectSrc: ["'self'", 'http://localhost:5000'],
+        connectSrc: ["'self'", 'https://localhost:5000', 'http://localhost:5000'],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
       },
@@ -72,16 +74,22 @@ app.use((req, res, next) => {
 
 // Build the list of allowed origins. CLIENT_URL may be a comma-separated list.
 // Vite falls back to 5174/5175 when 5173 is taken, so allow those in dev too.
-const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+const allowedOrigins = (process.env.CLIENT_URL || 'https://localhost:5173')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
-['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'].forEach(
-  (o) => {
-    if (!allowedOrigins.includes(o)) allowedOrigins.push(o);
-  }
-);
+// Vite may fall back to 5174/5175; allow both http and https localhost in dev.
+[
+  'https://localhost:5173',
+  'https://localhost:5174',
+  'https://localhost:5175',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+].forEach((o) => {
+  if (!allowedOrigins.includes(o)) allowedOrigins.push(o);
+});
 
 // --- Strict CORS ---
 app.use(
@@ -149,8 +157,33 @@ app.use('/api/notifications', notificationRoutes);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+
+// Start over HTTPS when a dev certificate is available (run `npm run gen-certs`).
+// Falls back to HTTP so the server still boots if certs are missing.
+const keyPath = process.env.SSL_KEY_PATH || './certs/key.pem';
+const certPath = process.env.SSL_CERT_PATH || './certs/cert.pem';
+const useHttps =
+  process.env.USE_HTTPS === 'true' &&
+  fs.existsSync(path.resolve(keyPath)) &&
+  fs.existsSync(path.resolve(certPath));
+
+if (useHttps) {
+  const credentials = {
+    key: fs.readFileSync(path.resolve(keyPath)),
+    cert: fs.readFileSync(path.resolve(certPath)),
+  };
+  https.createServer(credentials, app).listen(PORT, () => {
+    console.log(`Server running on HTTPS port ${PORT}`);
+  });
+} else {
+  if (process.env.USE_HTTPS === 'true') {
+    console.warn(
+      'USE_HTTPS is set but certificates were not found. Run "npm run gen-certs". Falling back to HTTP.'
+    );
+  }
+  app.listen(PORT, () => {
+    console.log(`Server running on HTTP port ${PORT}`);
+  });
+}
 
 module.exports = app;
