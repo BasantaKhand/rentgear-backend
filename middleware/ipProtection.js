@@ -136,6 +136,9 @@ function trackFingerprint(req) {
 function ipProtection(req, res, next) {
   const ip = clientIp(req);
   if (isBlocked(ip)) {
+    req.setAudit?.('SUSPICIOUS_ACTIVITY', {
+      details: { reason: 'request from blocked IP' },
+    });
     return res.status(403).json({ success: false, message: 'Access denied' });
   }
   trackFingerprint(req);
