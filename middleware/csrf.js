@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const CSRF_COOKIE = 'csrfToken';
 const csrfCookieOptions = {
   httpOnly: false, // must be sent by the browser; value comes from the body client-side
-  secure: process.env.NODE_ENV === 'production',
+  secure: process.env.NODE_ENV === 'production' || process.env.USE_HTTPS === 'true',
   sameSite: 'strict',
   path: '/',
   maxAge: 7 * 24 * 60 * 60 * 1000,
