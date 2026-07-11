@@ -10,4 +10,7 @@ uploads/ids/*
 uploads/equipment/*
 !uploads/equipment/.gitkeep
 *.log
+# Audit/monitoring log files (keep the folder, ignore contents)
+logs/*
+!logs/.gitkeep
 .DS_Store
