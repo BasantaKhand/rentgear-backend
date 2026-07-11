@@ -13,4 +13,6 @@ uploads/equipment/*
 # Audit/monitoring log files (keep the folder, ignore contents)
 logs/*
 !logs/.gitkeep
+# Local HTTPS dev certificates
+certs/
 .DS_Store
