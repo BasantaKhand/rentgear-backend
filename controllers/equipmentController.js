@@ -104,6 +104,12 @@ exports.createEquipment = async (req, res, next) => {
       image,
     });
 
+    req.setAudit?.('EQUIPMENT_CREATED', {
+      resource: 'equipment',
+      resourceId: equipment._id,
+      details: { name: equipment.name, category: equipment.category },
+    });
+
     return res.status(201).json({ success: true, equipment });
   } catch (error) {
     next(error);
@@ -142,6 +148,12 @@ exports.updateEquipment = async (req, res, next) => {
     }
 
     await equipment.save();
+
+    req.setAudit?.('EQUIPMENT_UPDATED', {
+      resource: 'equipment',
+      resourceId: equipment._id,
+    });
+
     return res.json({ success: true, equipment });
   } catch (error) {
     next(error);
@@ -180,6 +192,12 @@ exports.deleteEquipment = async (req, res, next) => {
 
     if (equipment.image) deleteUploadedFile(equipment.image);
     await equipment.deleteOne();
+
+    req.setAudit?.('EQUIPMENT_DELETED', {
+      resource: 'equipment',
+      resourceId: equipment._id,
+      details: { name: equipment.name },
+    });
 
     return res.json({
       success: true,
