@@ -155,6 +155,11 @@ exports.approveBooking = async (req, res, next) => {
     booking.status = 'approved';
     await booking.save();
     await notifyStatus(booking);
+    req.setAudit?.('ADMIN_APPROVE', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { from: 'pending', to: 'approved' },
+    });
     await booking.populate('equipment');
     return res.json({ success: true, booking });
   } catch (error) {
@@ -210,6 +215,12 @@ exports.rejectBooking = async (req, res, next) => {
       link: '/my-bookings',
     });
 
+    req.setAudit?.('ADMIN_REJECT', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { to: 'cancelled', reason: reason || null },
+    });
+
     await booking.populate('equipment');
     return res.json({ success: true, booking, reason: reason || null });
   } catch (error) {
@@ -234,6 +245,11 @@ exports.markPickup = async (req, res, next) => {
     booking.pickedUpAt = new Date();
     await booking.save();
     await notifyStatus(booking);
+    req.setAudit?.('ADMIN_PICKUP', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { from: 'approved', to: 'active' },
+    });
     await booking.populate('equipment');
     return res.json({ success: true, booking });
   } catch (error) {
@@ -280,6 +296,12 @@ exports.returnBooking = async (req, res, next) => {
       link: '/my-bookings',
     });
 
+    req.setAudit?.('ADMIN_RETURN', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { to: 'completed', lateFee: booking.lateFee },
+    });
+
     return res.json({ success: true, booking, lateFeeApplied: booking.lateFee });
   } catch (error) {
     next(error);
@@ -304,6 +326,11 @@ exports.applyLateFee = async (req, res, next) => {
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
+    req.setAudit?.('ADMIN_LATE_FEE', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { lateFee: fee },
+    });
     return res.json({ success: true, booking });
   } catch (error) {
     next(error);
