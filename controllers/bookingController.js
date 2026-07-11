@@ -12,6 +12,8 @@ const {
 const { buildInvoiceData, streamInvoicePDF } = require('../utils/invoiceGenerator');
 const { filterBody } = require('../utils/filterBody');
 const { logSecurityEvent } = require('../utils/securityLog');
+const { recordAudit } = require('../utils/audit');
+const { noteBookingAccess } = require('../utils/monitor');
 const { sendEmail } = require('../config/email');
 const {
   bookingConfirmation,
@@ -114,6 +116,16 @@ exports.createBooking = async (req, res, next) => {
     }
 
     const booking = await result.booking.populate('equipment');
+    req.setAudit?.('BOOKING_CREATED', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: {
+        equipmentId: String(equipmentId),
+        startDate,
+        endDate,
+        totalPrice: booking.totalPrice,
+      },
+    });
     return res.status(201).json({ success: true, booking });
   } catch (error) {
     next(error);
@@ -263,6 +275,14 @@ exports.getBookingById = async (req, res, next) => {
         .json({ success: false, message: 'Not authorized to view this booking' });
     }
 
+    // Enumeration detection: one user touching many distinct booking ids.
+    if (noteBookingAccess(req.user._id, booking._id)) {
+      recordAudit('SUSPICIOUS_ACTIVITY', req, {
+        resource: 'booking',
+        details: { reason: 'accessing many distinct booking ids' },
+      });
+    }
+
     return res.json({ success: true, booking });
   } catch (error) {
     next(error);
@@ -316,6 +336,11 @@ exports.cancelBooking = async (req, res, next) => {
       message: `${shortRef(booking._id)} has been cancelled.`,
       type: 'warning',
       link: '/my-bookings',
+    });
+
+    req.setAudit?.('BOOKING_CANCELLED', {
+      resource: 'booking',
+      resourceId: booking._id,
     });
 
     return res.json({ success: true, booking });
@@ -425,6 +450,12 @@ exports.extendBooking = async (req, res, next) => {
     });
 
     await booking.save();
+
+    req.setAudit?.('BOOKING_EXTENDED', {
+      resource: 'booking',
+      resourceId: booking._id,
+      details: { additionalDays, additionalPrice, newEndDate },
+    });
 
     return res.json({
       success: true,
