@@ -4,6 +4,8 @@ const Booking = require('../models/Booking');
 const { validatePassword } = require('../utils/passwordPolicy');
 const { filterBody } = require('../utils/filterBody');
 const { logSecurityEvent } = require('../utils/securityLog');
+const { recordAudit } = require('../utils/audit');
+const { notePasswordChange } = require('../utils/monitor');
 
 const BCRYPT_ROUNDS = 12;
 const PASSWORD_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -65,6 +67,12 @@ exports.updateProfile = async (req, res, next) => {
 
     await user.save();
 
+    req.setAudit?.('PROFILE_UPDATE', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { fields: Object.keys(filtered) },
+    });
+
     return res.json({ success: true, user: sanitizeUser(user) });
   } catch (error) {
     next(error);
@@ -91,6 +99,12 @@ exports.uploadIdDocument = async (req, res, next) => {
     }
     user.idDocument = filePath;
     await user.save();
+
+    req.setAudit?.('FILE_UPLOAD', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { type: 'idDocument', path: filePath },
+    });
 
     return res.json({
       success: true,
@@ -171,6 +185,16 @@ exports.changePassword = async (req, res, next) => {
     // Keep the most recent MAX_HISTORY hashes (newest first)
     user.passwordHistory = [newHash, ...history].slice(0, MAX_HISTORY);
     await user.save();
+
+    req.setAudit?.('PASSWORD_CHANGE', { resource: 'user', resourceId: user._id });
+    // Rapid repeated password changes are suspicious.
+    if (notePasswordChange(user._id)) {
+      recordAudit('SUSPICIOUS_ACTIVITY', req, {
+        resource: 'user',
+        resourceId: user._id,
+        details: { reason: 'multiple password changes in a short time' },
+      });
+    }
 
     return res.json({
       success: true,
