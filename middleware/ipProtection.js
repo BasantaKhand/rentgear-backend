@@ -13,10 +13,14 @@ const failedLogins = new Map();
 // Request fingerprints: ip -> { agents:Set, first:ts, count:number }.
 const fingerprints = new Map();
 
+const isProd = process.env.NODE_ENV === 'production';
 const FAILED_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const AUTO_BLOCK_THRESHOLD = 20; // failed logins within the window
+// Auto-block is relaxed to 50 failed logins/hour, and disabled entirely in
+// development so shared localhost IPs aren't blocked during testing.
+const AUTO_BLOCK_THRESHOLD = 50;
+const AUTO_BLOCK_ENABLED = isProd;
 const FINGERPRINT_WINDOW_MS = 60 * 1000; // 1 minute
-const SUSPICIOUS_AGENT_COUNT = 6; // distinct UAs from one IP within window
+const SUSPICIOUS_AGENT_COUNT = 12; // distinct UAs from one IP within window
 
 function clientIp(req) {
   return req.ip || req.connection?.remoteAddress || 'unknown';
@@ -74,7 +78,7 @@ async function recordFailedLogin(ip) {
   hits.push(now);
   failedLogins.set(ip, hits);
 
-  if (hits.length >= AUTO_BLOCK_THRESHOLD && !isBlocked(ip)) {
+  if (AUTO_BLOCK_ENABLED && hits.length >= AUTO_BLOCK_THRESHOLD && !isBlocked(ip)) {
     await blockIp(ip, {
       reason: `Auto-blocked: ${hits.length} failed logins within 1 hour`,
       auto: true,
