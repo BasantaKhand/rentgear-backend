@@ -43,6 +43,45 @@ exports.welcomeEmail = (user) => ({
   ),
 });
 
+// 1b. Login OTP (two-factor)
+exports.otpEmail = (code) => ({
+  subject: 'RentGear - Your Login Code',
+  text: `Your verification code is: ${code}. This code expires in 5 minutes. If you didn't request this, please ignore this email.`,
+  html: layout(
+    'Your Login Code',
+    `<p>Use the verification code below to finish signing in:</p>
+     <p style="font-size:32px;font-weight:700;letter-spacing:8px;text-align:center;background:#f1f5f9;padding:16px;border-radius:8px;margin:16px 0;">${code}</p>
+     <p>This code expires in <strong>5 minutes</strong>.</p>
+     <p style="color:#94a3b8;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>`
+  ),
+});
+
+// 1c. Password reset request
+exports.passwordResetEmail = (resetUrl) => ({
+  subject: 'RentGear - Reset Your Password',
+  text: `You requested a password reset. Visit this link to reset your password: ${resetUrl} — This link expires in 15 minutes. If you didn't request this, ignore this email.`,
+  html: layout(
+    'Reset Your Password',
+    `<p>You requested a password reset. Click the button below to choose a new password.</p>
+     <p style="text-align:center;margin:24px 0;">
+       <a href="${resetUrl}" style="display:inline-block;background:#6366f1;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Reset Password</a>
+     </p>
+     <p>This link expires in <strong>15 minutes</strong>.</p>
+     <p style="color:#94a3b8;font-size:13px;">If you didn't request this, you can safely ignore this email. Your password will remain unchanged.</p>`
+  ),
+});
+
+// 1d. Password reset confirmation
+exports.passwordResetConfirmation = () => ({
+  subject: 'RentGear - Password Changed',
+  text: `Your password has been successfully changed. If you didn't do this, contact support immediately at support@rentgear.com.`,
+  html: layout(
+    'Password Changed',
+    `<p>Your password has been successfully changed.</p>
+     <p>If you did not make this change, please contact support immediately at <a href="mailto:support@rentgear.com" style="color:#6366f1;">support@rentgear.com</a>.</p>`
+  ),
+});
+
 // 2. Booking confirmation
 exports.bookingConfirmation = (booking) => {
   const equipment = booking.equipment || {};
