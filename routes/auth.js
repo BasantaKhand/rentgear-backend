@@ -12,10 +12,24 @@ const {
   getCsrfToken,
   getSessions,
   revokeSession,
+  verifyOtp,
+  resendOtp,
+  mfaEnable,
+  mfaDisable,
+  mfaVerifySetup,
+  forgotPassword,
+  verifyResetToken,
+  resetPassword,
 } = require('../controllers/authController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { authLimiter, authSlowDown } = require('../middleware/rateLimiter');
+const {
+  authLimiter,
+  authSlowDown,
+  otpVerifyLimiter,
+  otpResendLimiter,
+  passwordResetLimiter,
+} = require('../middleware/rateLimiter');
 const { verifyCsrf } = require('../middleware/csrf');
 const { registerRules, loginRules, isValidObjectId } = require('../middleware/validator');
 
@@ -30,6 +44,30 @@ router.post('/register', authLimiter, authSlowDown, registerRules, validate, reg
 
 // @route  POST /api/auth/login
 router.post('/login', authLimiter, authSlowDown, loginRules, validate, login);
+
+// @route  POST /api/auth/verify-otp   (login step 2)
+router.post('/verify-otp', otpVerifyLimiter, verifyOtp);
+
+// @route  POST /api/auth/mfa/resend   (login step, rate limited 1/min)
+router.post('/mfa/resend', otpResendLimiter, resendOtp);
+
+// @route  POST /api/auth/mfa/enable   (protected)
+router.post('/mfa/enable', auth, passwordResetLimiter, mfaEnable);
+
+// @route  POST /api/auth/mfa/disable  (protected)
+router.post('/mfa/disable', auth, passwordResetLimiter, mfaDisable);
+
+// @route  POST /api/auth/mfa/verify   (protected, confirm enable/disable)
+router.post('/mfa/verify', auth, otpVerifyLimiter, mfaVerifySetup);
+
+// @route  POST /api/auth/forgot-password
+router.post('/forgot-password', passwordResetLimiter, forgotPassword);
+
+// @route  GET /api/auth/verify-reset-token/:token
+router.get('/verify-reset-token/:token', verifyResetToken);
+
+// @route  POST /api/auth/reset-password/:token
+router.post('/reset-password/:token', passwordResetLimiter, resetPassword);
 
 // @route  POST /api/auth/refresh-token  (CSRF double-submit protected)
 router.post('/refresh-token', verifyCsrf, refreshToken);
