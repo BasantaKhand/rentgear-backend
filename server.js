@@ -13,7 +13,7 @@ const hpp = require('hpp');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
 const { ipProtection } = require('./middleware/ipProtection');
-const { globalLimiter, apiLimiter } = require('./middleware/rateLimiter');
+const { apiLimiter } = require('./middleware/rateLimiter');
 const { makeQueryWritable, xssClean } = require('./middleware/sanitize');
 const httpsRedirect = require('./middleware/httpsRedirect');
 const auditLogger = require('./middleware/auditLogger');
@@ -128,9 +128,6 @@ app.use(xssClean);
 
 // Reject requests from blocked IPs before doing any real work.
 app.use(ipProtection);
-
-// Global rate limit across every route.
-app.use(globalLimiter);
 
 // Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
