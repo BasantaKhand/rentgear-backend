@@ -20,7 +20,8 @@ const {
   getFailedLoginCount,
 } = require('../middleware/ipProtection');
 const { sendEmail } = require('../config/email');
-const { welcomeEmail } = require('../utils/emailTemplates');
+const { welcomeEmail, otpEmail, passwordResetEmail, passwordResetConfirmation } = require('../utils/emailTemplates');
+const { generateOtp, hashOtp, verifyOtpHash, OTP_TTL_MS, OTP_MAX_ATTEMPTS } = require('../utils/otp');
 const { notify, notifyAdmins } = require('../utils/notify');
 
 const BCRYPT_ROUNDS = 12;
@@ -59,10 +60,40 @@ const sanitizeUser = (user) => ({
   verified: user.verified,
   isActive: user.isActive !== false,
   idDocument: user.idDocument,
+  mfaEnabled: !!user.mfaEnabled,
   passwordExpiresAt: user.passwordExpiresAt,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
+
+// Generate an OTP, store its hash + expiry on the user, and email the code.
+// Resets the wrong-attempt counter. `user` must be a full mongoose document.
+// Email delivery must NEVER break the login/MFA flow: if SMTP isn't configured
+// or sending fails, the code is logged to the console as a development fallback.
+async function issueOtp(user) {
+  const code = generateOtp();
+  user.mfaCode = await hashOtp(code);
+  user.mfaCodeExpires = new Date(Date.now() + OTP_TTL_MS);
+  user.mfaFailedAttempts = 0;
+  await user.save();
+
+  const smtpConfigured = !!process.env.SMTP_HOST;
+  try {
+    const result = await sendEmail({ to: user.email, ...otpEmail(code) });
+    // No real SMTP, or the send failed → surface the code in the console so
+    // developers can complete the flow without a mail server.
+    if (!smtpConfigured || !result || result.success === false) {
+      console.log(
+        `[DEV OTP] Login code for ${user.email}: ${code} (valid 5 minutes)`
+      );
+    }
+  } catch (err) {
+    // Defensive: sendEmail is designed not to throw, but if it ever does the
+    // login flow must still succeed — log the code and continue.
+    console.error(`[MFA] OTP email error for ${user.email}: ${err.message}`);
+    console.log(`[DEV OTP] Login code for ${user.email}: ${code} (valid 5 minutes)`);
+  }
+}
 
 async function logAttempt(req, email, success) {
   try {
@@ -280,11 +311,30 @@ exports.login = async (req, res, next) => {
         .json({ success: false, message: 'Account has been disabled' });
     }
 
-    // Success: reset counters
+    // Password is correct: reset failed-login counters.
     user.failedLoginAttempts = 0;
     user.lockUntil = null;
     await user.save();
     clearFailedLogins(ip);
+
+    // MFA gate: if enabled, don't issue tokens yet — send an OTP and require
+    // the second step (POST /api/auth/verify-otp).
+    if (user.mfaEnabled) {
+      await issueOtp(user);
+      await logAttempt(req, email, true);
+      req.setAudit?.('LOGIN_MFA_CHALLENGE', {
+        resource: 'user',
+        resourceId: user._id,
+        details: { email: user.email },
+      });
+      return res.json({
+        success: true,
+        mfaRequired: true,
+        email: user.email,
+        message: 'A verification code has been sent to your email.',
+      });
+    }
+
     await logAttempt(req, email, true);
     req.setAudit?.('LOGIN_SUCCESS', {
       resource: 'user',
@@ -304,6 +354,202 @@ exports.login = async (req, res, next) => {
       user: sanitizeUser(user),
       passwordExpired: !!passwordExpired,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Reset the stored OTP state on a user document (does not save).
+function clearOtpState(user) {
+  user.mfaCode = null;
+  user.mfaCodeExpires = null;
+  user.mfaFailedAttempts = 0;
+}
+
+// Validate a submitted OTP against a user. Mutates attempt counters/clears the
+// code as needed; caller persists. Returns { ok } or { ok:false, reason }.
+async function checkOtp(user, otp) {
+  if (!user || !user.mfaCode || !user.mfaCodeExpires) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (new Date(user.mfaCodeExpires).getTime() < Date.now()) {
+    clearOtpState(user);
+    return { ok: false, reason: 'expired' };
+  }
+  if ((user.mfaFailedAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+    clearOtpState(user);
+    return { ok: false, reason: 'attempts' };
+  }
+  const match = await verifyOtpHash(otp, user.mfaCode);
+  if (!match) {
+    user.mfaFailedAttempts = (user.mfaFailedAttempts || 0) + 1;
+    if (user.mfaFailedAttempts >= OTP_MAX_ATTEMPTS) clearOtpState(user);
+    return { ok: false, reason: 'invalid' };
+  }
+  return { ok: true };
+}
+
+// @route POST /api/auth/verify-otp   (login step 2)
+// Body: { email, otp }. Verifies the login OTP and issues tokens.
+exports.verifyOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
+      '+mfaCode +mfaCodeExpires +mfaFailedAttempts'
+    );
+
+    // Generic failure that doesn't reveal whether the email/MFA state exists.
+    const generic = () =>
+      res.status(400).json({ success: false, message: 'Invalid or expired code' });
+
+    if (!user || !user.mfaEnabled) return generic();
+    if (user.isActive === false) {
+      return res.status(403).json({ success: false, message: 'Account has been disabled' });
+    }
+
+    const result = await checkOtp(user, otp);
+    if (!result.ok) {
+      await user.save();
+      if (result.reason === 'expired') {
+        return res.status(400).json({ success: false, message: 'Code expired. Please request a new one.' });
+      }
+      if (result.reason === 'attempts') {
+        return res.status(429).json({ success: false, message: 'Too many attempts. Please request a new code.' });
+      }
+      req.setAudit?.('LOGIN_FAILED', { details: { email: user.email, reason: 'bad otp' } });
+      return generic();
+    }
+
+    // Success: single-use — clear the code, then start a session.
+    clearOtpState(user);
+    await user.save();
+    await logAttempt(req, user.email, true);
+    req.setAudit?.('LOGIN_SUCCESS', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email, mfa: true },
+    });
+
+    const passwordExpired =
+      user.passwordExpiresAt && user.passwordExpiresAt.getTime() < Date.now();
+    const { accessToken, csrfToken } = await startSession(req, res, user);
+    return res.json({
+      success: true,
+      accessToken,
+      csrfToken,
+      user: sanitizeUser(user),
+      passwordExpired: !!passwordExpired,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/resend   (login step, rate limited)
+// Body: { email }. Reissues a login OTP. Always responds generically.
+exports.resendOtp = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() });
+    if (user && user.mfaEnabled) {
+      await issueOtp(user);
+    }
+    return res.json({
+      success: true,
+      message: 'If verification is required, a new code has been sent.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/enable   (protected)
+// Body: { password }. Confirms password, emails an OTP to confirm enabling.
+exports.mfaEnable = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.mfaEnabled) {
+      return res.status(400).json({ success: false, message: 'Two-factor is already enabled' });
+    }
+    if (!password || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ success: false, message: 'Password is incorrect' });
+    }
+    user.mfaPendingAction = 'enable';
+    await issueOtp(user); // saves the user
+    return res.json({ success: true, otpSent: true, message: 'A confirmation code was sent to your email.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/disable   (protected)
+// Body: { password }. Confirms password, emails an OTP to confirm disabling.
+exports.mfaDisable = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.mfaEnabled) {
+      return res.status(400).json({ success: false, message: 'Two-factor is not enabled' });
+    }
+    if (!password || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ success: false, message: 'Password is incorrect' });
+    }
+    user.mfaPendingAction = 'disable';
+    await issueOtp(user);
+    return res.json({ success: true, otpSent: true, message: 'A confirmation code was sent to your email.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/verify   (protected)
+// Body: { otp }. Confirms the pending enable/disable action.
+exports.mfaVerifySetup = async (req, res, next) => {
+  try {
+    const { otp } = req.body;
+    const user = await User.findById(req.user._id).select(
+      '+mfaCode +mfaCodeExpires +mfaFailedAttempts +mfaPendingAction'
+    );
+    if (!user || !user.mfaPendingAction) {
+      return res.status(400).json({ success: false, message: 'No pending 2FA change' });
+    }
+
+    const result = await checkOtp(user, otp);
+    if (!result.ok) {
+      await user.save();
+      if (result.reason === 'expired') {
+        return res.status(400).json({ success: false, message: 'Code expired. Please try again.' });
+      }
+      if (result.reason === 'attempts') {
+        return res.status(429).json({ success: false, message: 'Too many attempts. Please try again.' });
+      }
+      return res.status(400).json({ success: false, message: 'Invalid code' });
+    }
+
+    const action = user.mfaPendingAction;
+    user.mfaEnabled = action === 'enable';
+    user.mfaPendingAction = null;
+    clearOtpState(user);
+    await user.save();
+
+    req.setAudit?.(action === 'enable' ? 'MFA_ENABLED' : 'MFA_DISABLED', {
+      resource: 'user',
+      resourceId: user._id,
+    });
+    notify(user._id, {
+      title: action === 'enable' ? 'Two-factor enabled' : 'Two-factor disabled',
+      message:
+        action === 'enable'
+          ? 'Two-factor authentication is now protecting your account.'
+          : 'Two-factor authentication has been turned off.',
+      type: action === 'enable' ? 'success' : 'warning',
+      link: '/profile',
+    });
+
+    return res.json({ success: true, mfaEnabled: user.mfaEnabled });
   } catch (error) {
     next(error);
   }
@@ -532,6 +778,196 @@ exports.revokeSession = async (req, res, next) => {
     session.isActive = false;
     await session.save();
     return res.json({ success: true, message: 'Session revoked' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =============================================================================
+// PASSWORD RESET
+// =============================================================================
+
+const RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+// @route POST /api/auth/forgot-password
+// Body: { email }. Sends a password-reset link. Never reveals if email exists.
+exports.forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
+
+    // Always return the same response regardless of whether the user exists.
+    const genericResponse = () =>
+      res.json({
+        success: true,
+        message: 'If that email exists, a reset link has been sent.',
+      });
+
+    if (!normalizedEmail) return genericResponse();
+
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user || user.isActive === false) {
+      // Log the attempt even for unknown emails (security telemetry).
+      recordAudit('PASSWORD_RESET_REQUEST', req, {
+        details: { email: normalizedEmail, found: false },
+      });
+      return genericResponse();
+    }
+
+    // Generate a secure random token
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    // Store hashed token + expiry on the user
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpires = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+    await user.save();
+
+    // Build the reset URL using the raw (unhashed) token
+    const clientUrl = (process.env.CLIENT_URL || 'https://localhost:5173')
+      .split(',')[0]
+      .trim();
+    const resetUrl = `${clientUrl}/reset-password/${rawToken}`;
+
+    // Send the email (never let a failure leak to the client)
+    const emailResult = await sendEmail({
+      to: user.email,
+      ...passwordResetEmail(resetUrl),
+    });
+
+    if (!emailResult || emailResult.success === false) {
+      console.log(
+        `[DEV RESET] Password reset link for ${user.email}: ${resetUrl}`
+      );
+    }
+
+    recordAudit('PASSWORD_RESET_REQUEST', req, {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email },
+    });
+
+    return genericResponse();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route GET /api/auth/verify-reset-token/:token
+// Checks if a reset token is valid and not expired (lets frontend show form vs error).
+exports.verifyResetToken = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    if (!token) {
+      return res.json({ success: true, valid: false });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: new Date() },
+    }).select('+resetPasswordToken +resetPasswordExpires');
+
+    return res.json({ success: true, valid: !!user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/reset-password/:token
+// Body: { newPassword }. Resets the password using a valid token.
+exports.resetPassword = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const { newPassword } = req.body;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset link.',
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: new Date() },
+    }).select('+password +passwordHistory +resetPasswordToken +resetPasswordExpires');
+
+    if (!user) {
+      recordAudit('PASSWORD_RESET_FAILED', req, {
+        details: { reason: 'invalid or expired token' },
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset link.',
+      });
+    }
+
+    // Validate new password against policy
+    const policy = validatePassword(newPassword, { name: user.name, email: user.email });
+    if (!policy.valid) {
+      return res.status(400).json({
+        success: false,
+        message: policy.errors[0],
+        errors: policy.errors,
+      });
+    }
+
+    // Check password not in history (last 5)
+    const history = user.passwordHistory || [];
+    for (const oldHash of history) {
+      const reused = await bcrypt.compare(newPassword, oldHash);
+      if (reused) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot reuse any of your last 5 passwords.',
+        });
+      }
+    }
+
+    // Hash and save the new password
+    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    const now = new Date();
+
+    // Update password history (keep last 5 including the new one)
+    const updatedHistory = [hashedPassword, ...history].slice(0, 5);
+
+    user.password = hashedPassword;
+    user.passwordHistory = updatedHistory;
+    user.passwordChangedAt = now;
+    user.passwordExpiresAt = new Date(now.getTime() + PASSWORD_TTL_MS);
+
+    // Clear the reset token (single-use)
+    user.resetPasswordToken = null;
+    user.resetPasswordExpires = null;
+
+    // Invalidate all existing sessions
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+    await Session.updateMany({ user: user._id }, { isActive: false });
+
+    // Send confirmation email
+    sendEmail({ to: user.email, ...passwordResetConfirmation() }).catch(() => {});
+
+    // Notify the user in-app
+    notify(user._id, {
+      title: 'Password changed',
+      message: 'Your password was reset successfully. All sessions have been logged out.',
+      type: 'success',
+      link: '/login',
+    });
+
+    recordAudit('PASSWORD_RESET_SUCCESS', req, {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Password has been reset successfully. Please log in with your new password.',
+    });
   } catch (error) {
     next(error);
   }
