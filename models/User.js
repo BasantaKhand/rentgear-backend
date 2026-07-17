@@ -81,6 +81,43 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // --- Email OTP two-factor authentication ---
+    mfaEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    mfaCode: {
+      type: String, // hashed OTP (never stored in plaintext)
+      default: null,
+      select: false,
+    },
+    mfaCodeExpires: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    mfaFailedAttempts: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+    // Pending MFA setup action awaiting OTP confirmation: 'enable' | 'disable'.
+    mfaPendingAction: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    // --- Password reset ---
+    resetPasswordToken: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      default: null,
+      select: false,
+    },
   },
   {
     timestamps: true, // adds createdAt and updatedAt
@@ -96,6 +133,12 @@ const transform = (doc, ret) => {
   delete ret.tokenVersion;
   delete ret.failedLoginAttempts;
   delete ret.lockUntil;
+  delete ret.mfaCode;
+  delete ret.mfaCodeExpires;
+  delete ret.mfaFailedAttempts;
+  delete ret.mfaPendingAction;
+  delete ret.resetPasswordToken;
+  delete ret.resetPasswordExpires;
   delete ret.__v;
   return ret;
 };
