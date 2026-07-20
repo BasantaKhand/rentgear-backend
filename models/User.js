@@ -17,9 +17,19 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, 'Password is required'],
       minlength: 6,
       select: false,
+    },
+    // --- OAuth ---
+    googleId: {
+      type: String,
+      unique: true,
+      sparse: true, // allows multiple null values
+    },
+    authProvider: {
+      type: String,
+      enum: ['local', 'google'],
+      default: 'local',
     },
     // Sensitive fields are encrypted at rest via AES-256-GCM getters/setters.
     phone: {
@@ -86,6 +96,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Which MFA method is active: 'none' | 'totp' | 'email'
+    mfaMethod: {
+      type: String,
+      enum: ['none', 'totp', 'email'],
+      default: 'none',
+    },
     mfaCode: {
       type: String, // hashed OTP (never stored in plaintext)
       default: null,
@@ -105,6 +121,23 @@ const userSchema = new mongoose.Schema(
     mfaPendingAction: {
       type: String,
       default: null,
+      select: false,
+    },
+    // --- TOTP (Authenticator App) ---
+    totpSecret: {
+      type: String, // encrypted at rest
+      default: null,
+      select: false,
+      set: encrypt,
+      get: decrypt,
+    },
+    totpEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    totpBackupCodes: {
+      type: [String], // hashed backup codes
+      default: [],
       select: false,
     },
     // --- Password reset ---
@@ -137,8 +170,11 @@ const transform = (doc, ret) => {
   delete ret.mfaCodeExpires;
   delete ret.mfaFailedAttempts;
   delete ret.mfaPendingAction;
+  delete ret.totpSecret;
+  delete ret.totpBackupCodes;
   delete ret.resetPasswordToken;
   delete ret.resetPasswordExpires;
+  delete ret.googleId;
   delete ret.__v;
   return ret;
 };
