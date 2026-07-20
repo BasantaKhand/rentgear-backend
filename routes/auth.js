@@ -20,6 +20,13 @@ const {
   forgotPassword,
   verifyResetToken,
   resetPassword,
+  totpSetup,
+  totpVerifySetup,
+  totpDisable,
+  verifyTotp,
+  useBackupCode,
+  sendEmailRecovery,
+  verifyEmailRecovery,
 } = require('../controllers/authController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
@@ -29,9 +36,18 @@ const {
   otpVerifyLimiter,
   otpResendLimiter,
   passwordResetLimiter,
+  emailRecoveryLimiter,
 } = require('../middleware/rateLimiter');
 const { verifyCsrf } = require('../middleware/csrf');
 const { registerRules, loginRules, isValidObjectId } = require('../middleware/validator');
+const {
+  getGoogleAuthUrl,
+  googleCallback,
+  verifyGoogleToken,
+  linkGoogle,
+  unlinkGoogle,
+  setPassword,
+} = require('../controllers/googleAuthController');
 
 // @route  GET /api/auth/captcha
 router.get('/captcha', getCaptcha);
@@ -60,6 +76,28 @@ router.post('/mfa/disable', auth, passwordResetLimiter, mfaDisable);
 // @route  POST /api/auth/mfa/verify   (protected, confirm enable/disable)
 router.post('/mfa/verify', auth, otpVerifyLimiter, mfaVerifySetup);
 
+// --- TOTP (Authenticator App) ---
+// @route  POST /api/auth/mfa/totp/setup   (protected)
+router.post('/mfa/totp/setup', auth, passwordResetLimiter, totpSetup);
+
+// @route  POST /api/auth/mfa/totp/verify-setup   (protected)
+router.post('/mfa/totp/verify-setup', auth, otpVerifyLimiter, totpVerifySetup);
+
+// @route  POST /api/auth/mfa/totp/disable   (protected)
+router.post('/mfa/totp/disable', auth, passwordResetLimiter, totpDisable);
+
+// @route  POST /api/auth/verify-totp   (login step 2 for TOTP)
+router.post('/verify-totp', otpVerifyLimiter, verifyTotp);
+
+// @route  POST /api/auth/mfa/use-backup-code   (login recovery)
+router.post('/mfa/use-backup-code', otpVerifyLimiter, useBackupCode);
+
+// @route  POST /api/auth/mfa/send-email-recovery   (TOTP lost device)
+router.post('/mfa/send-email-recovery', emailRecoveryLimiter, sendEmailRecovery);
+
+// @route  POST /api/auth/verify-email-recovery   (email fallback for TOTP)
+router.post('/verify-email-recovery', otpVerifyLimiter, verifyEmailRecovery);
+
 // @route  POST /api/auth/forgot-password
 router.post('/forgot-password', passwordResetLimiter, forgotPassword);
 
@@ -86,5 +124,24 @@ router.get('/sessions', auth, getSessions);
 
 // @route  DELETE /api/auth/sessions/:id
 router.delete('/sessions/:id', auth, isValidObjectId('id'), revokeSession);
+
+// --- Google OAuth ---
+// @route  GET /api/auth/google
+router.get('/google', getGoogleAuthUrl);
+
+// @route  GET /api/auth/google/callback
+router.get('/google/callback', googleCallback);
+
+// @route  POST /api/auth/google/verify   (frontend sends credential from popup)
+router.post('/google/verify', authLimiter, verifyGoogleToken);
+
+// @route  POST /api/auth/google/link   (protected, link Google to existing account)
+router.post('/google/link', auth, linkGoogle);
+
+// @route  POST /api/auth/google/unlink   (protected, unlink Google)
+router.post('/google/unlink', auth, unlinkGoogle);
+
+// @route  POST /api/auth/set-password   (protected, for Google-only users)
+router.post('/set-password', auth, passwordResetLimiter, setPassword);
 
 module.exports = router;
