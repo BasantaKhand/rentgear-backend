@@ -155,6 +155,17 @@ const otpResendLimiter = rateLimit({
   handler: makeHandler('otp-resend'),
 });
 
+// -----------------------------------------------------------------------------
+// Email recovery limiter: 1 per 5 minutes per IP (x5 in dev).
+// Used for the TOTP email-fallback recovery flow.
+// -----------------------------------------------------------------------------
+const emailRecoveryLimiter = rateLimit({
+  ...commonOptions,
+  windowMs: 5 * 60 * 1000,
+  limit: 1 * DEV_MULT,
+  handler: makeHandler('email-recovery'),
+});
+
 module.exports = {
   apiLimiter,
   authLimiter,
@@ -163,4 +174,5 @@ module.exports = {
   authSlowDown,
   otpVerifyLimiter,
   otpResendLimiter,
+  emailRecoveryLimiter,
 };
