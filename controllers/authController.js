@@ -23,13 +23,15 @@ const { sendEmail } = require('../config/email');
 const { welcomeEmail, otpEmail, passwordResetEmail, passwordResetConfirmation } = require('../utils/emailTemplates');
 const { generateOtp, hashOtp, verifyOtpHash, OTP_TTL_MS, OTP_MAX_ATTEMPTS } = require('../utils/otp');
 const { notify, notifyAdmins } = require('../utils/notify');
+const speakeasy = require('speakeasy');
+const QRCode = require('qrcode');
 
 const BCRYPT_ROUNDS = 12;
 const PASSWORD_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const LOCK_15_MIN = 15 * 60 * 1000;
 const LOCK_1_HOUR = 60 * 60 * 1000;
 // After this many failed logins from an IP, a CAPTCHA is required on the next try.
-const CAPTCHA_AFTER_ATTEMPTS = 3;
+const CAPTCHA_AFTER_ATTEMPTS = 5;
 // Session policy
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // absolute refresh lifetime
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // invalidate after 30 min of no activity
@@ -61,6 +63,11 @@ const sanitizeUser = (user) => ({
   isActive: user.isActive !== false,
   idDocument: user.idDocument,
   mfaEnabled: !!user.mfaEnabled,
+  mfaMethod: user.mfaMethod || 'none',
+  totpEnabled: !!user.totpEnabled,
+  authProvider: user.authProvider || 'local',
+  hasPassword: !!user.password,
+  googleLinked: !!user.googleId,
   passwordExpiresAt: user.passwordExpiresAt,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
@@ -249,7 +256,7 @@ exports.login = async (req, res, next) => {
     }
 
     const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
-      '+password'
+      '+password +googleId'
     );
 
     // Locked account?
@@ -280,12 +287,12 @@ exports.login = async (req, res, next) => {
       let attemptsRemaining;
       if (user) {
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-        if (user.failedLoginAttempts >= 10) {
+        if (user.failedLoginAttempts >= 15) {
           user.lockUntil = new Date(Date.now() + LOCK_1_HOUR);
-        } else if (user.failedLoginAttempts >= 5) {
+        } else if (user.failedLoginAttempts >= 10) {
           user.lockUntil = new Date(Date.now() + LOCK_15_MIN);
         }
-        attemptsRemaining = Math.max(5 - user.failedLoginAttempts, 0);
+        attemptsRemaining = Math.max(10 - user.failedLoginAttempts, 0);
         await user.save();
       }
       await logAttempt(req, email, false);
@@ -317,21 +324,31 @@ exports.login = async (req, res, next) => {
     await user.save();
     clearFailedLogins(ip);
 
-    // MFA gate: if enabled, don't issue tokens yet — send an OTP and require
-    // the second step (POST /api/auth/verify-otp).
+    // MFA gate: if enabled, don't issue tokens yet.
     if (user.mfaEnabled) {
-      await issueOtp(user);
+      const method = user.mfaMethod || 'email';
+
+      // For email OTP, send the code now. For TOTP, the user already has their
+      // authenticator app — no server action needed.
+      if (method === 'email') {
+        await issueOtp(user);
+      }
+
       await logAttempt(req, email, true);
       req.setAudit?.('LOGIN_MFA_CHALLENGE', {
         resource: 'user',
         resourceId: user._id,
-        details: { email: user.email },
+        details: { email: user.email, mfaMethod: method },
       });
       return res.json({
         success: true,
         mfaRequired: true,
+        mfaMethod: method,
         email: user.email,
-        message: 'A verification code has been sent to your email.',
+        message:
+          method === 'totp'
+            ? 'Enter the code from your authenticator app.'
+            : 'A verification code has been sent to your email.',
       });
     }
 
@@ -395,7 +412,7 @@ exports.verifyOtp = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
     const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
-      '+mfaCode +mfaCodeExpires +mfaFailedAttempts'
+      '+mfaCode +mfaCodeExpires +mfaFailedAttempts +password +googleId'
     );
 
     // Generic failure that doesn't reveal whether the email/MFA state exists.
@@ -586,7 +603,7 @@ exports.refreshToken = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
     }
 
-    const user = await User.findById(decoded.id);
+    const user = await User.findById(decoded.id).select('+password +googleId');
     if (!user || user.isActive === false) {
       return res.status(401).json({ success: false, message: 'Not authorized' });
     }
@@ -682,7 +699,9 @@ exports.refreshToken = async (req, res, next) => {
 // @route GET /api/auth/me
 exports.getMe = async (req, res, next) => {
   try {
-    return res.json({ success: true, user: sanitizeUser(req.user) });
+    // Need +password and +googleId to compute hasPassword/googleLinked flags.
+    const fullUser = await User.findById(req.user._id).select('+password +googleId');
+    return res.json({ success: true, user: sanitizeUser(fullUser || req.user) });
   } catch (error) {
     next(error);
   }
@@ -967,6 +986,390 @@ exports.resetPassword = async (req, res, next) => {
     return res.json({
       success: true,
       message: 'Password has been reset successfully. Please log in with your new password.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =============================================================================
+// TOTP (AUTHENTICATOR APP) MFA
+// =============================================================================
+
+// Generate 10 random backup codes (8 chars each), return raw + hashed versions.
+async function generateBackupCodes() {
+  const codes = [];
+  const hashed = [];
+  for (let i = 0; i < 10; i++) {
+    const code = crypto.randomBytes(4).toString('hex'); // 8 hex chars
+    codes.push(code);
+    hashed.push(await bcrypt.hash(code, BCRYPT_ROUNDS));
+  }
+  return { codes, hashed };
+}
+
+// @route POST /api/auth/mfa/totp/setup
+// Protected. Generates a TOTP secret + QR code for the user to scan.
+exports.totpSetup = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.user._id).select('+password +totpSecret');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!password || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ success: false, message: 'Password is incorrect' });
+    }
+
+    if (user.totpEnabled) {
+      return res.status(400).json({ success: false, message: 'Authenticator is already enabled' });
+    }
+
+    // Generate a new TOTP secret
+    const secret = speakeasy.generateSecret({
+      name: `RentGear (${user.email})`,
+      issuer: 'RentGear',
+      length: 20,
+    });
+
+    // Store the secret temporarily (totpEnabled remains false until verified)
+    user.totpSecret = secret.base32;
+    await user.save();
+
+    // Generate QR code as data URL
+    const otpauthUrl = secret.otpauth_url;
+    const qrCodeUrl = await QRCode.toDataURL(otpauthUrl);
+
+    recordAudit('TOTP_SETUP_INITIATED', req, {
+      resource: 'user',
+      resourceId: user._id,
+    });
+
+    return res.json({
+      success: true,
+      qrCodeUrl,
+      manualEntryKey: secret.base32,
+      message: 'Scan the QR code with your authenticator app, then verify with a code.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/totp/verify-setup
+// Protected. Verifies a TOTP code to confirm setup, enables TOTP, returns backup codes.
+exports.totpVerifySetup = async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    const user = await User.findById(req.user._id).select('+totpSecret +totpBackupCodes');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!user.totpSecret) {
+      return res.status(400).json({ success: false, message: 'No TOTP setup in progress. Start setup first.' });
+    }
+
+    if (user.totpEnabled) {
+      return res.status(400).json({ success: false, message: 'Authenticator is already enabled' });
+    }
+
+    // Verify the token against the stored secret
+    const verified = speakeasy.totp.verify({
+      secret: user.totpSecret,
+      encoding: 'base32',
+      token: String(token),
+      window: 1, // allows 30s drift
+    });
+
+    if (!verified) {
+      recordAudit('TOTP_SETUP_FAILED', req, {
+        resource: 'user',
+        resourceId: user._id,
+        details: { reason: 'invalid code' },
+      });
+      return res.status(400).json({ success: false, message: 'Invalid code. Please try again.' });
+    }
+
+    // Generate backup codes
+    const { codes, hashed } = await generateBackupCodes();
+
+    // Enable TOTP
+    user.totpEnabled = true;
+    user.mfaEnabled = true;
+    user.mfaMethod = 'totp';
+    user.totpBackupCodes = hashed;
+    await user.save();
+
+    recordAudit('TOTP_ENABLED', req, {
+      resource: 'user',
+      resourceId: user._id,
+    });
+
+    notify(user._id, {
+      title: 'Authenticator app enabled',
+      message: 'Two-factor authentication via authenticator app is now protecting your account.',
+      type: 'success',
+      link: '/profile',
+    });
+
+    return res.json({
+      success: true,
+      mfaEnabled: true,
+      mfaMethod: 'totp',
+      backupCodes: codes,
+      message: 'Authenticator app enabled. Save your backup codes securely.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/totp/disable
+// Protected. Disables TOTP MFA after password confirmation.
+exports.totpDisable = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.user._id).select('+password +totpSecret +totpBackupCodes');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!password || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ success: false, message: 'Password is incorrect' });
+    }
+
+    if (!user.totpEnabled) {
+      return res.status(400).json({ success: false, message: 'Authenticator is not enabled' });
+    }
+
+    user.totpEnabled = false;
+    user.totpSecret = null;
+    user.totpBackupCodes = [];
+    user.mfaEnabled = false;
+    user.mfaMethod = 'none';
+    await user.save();
+
+    recordAudit('TOTP_DISABLED', req, {
+      resource: 'user',
+      resourceId: user._id,
+    });
+
+    notify(user._id, {
+      title: 'Authenticator app disabled',
+      message: 'Two-factor authentication has been turned off.',
+      type: 'warning',
+      link: '/profile',
+    });
+
+    return res.json({ success: true, mfaEnabled: false, mfaMethod: 'none' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/verify-totp   (login step 2 for TOTP users)
+// Body: { email, token }. Verifies authenticator code and issues tokens.
+exports.verifyTotp = async (req, res, next) => {
+  try {
+    const { email, token } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
+      '+totpSecret +mfaFailedAttempts +password +googleId'
+    );
+
+    const generic = () =>
+      res.status(400).json({ success: false, message: 'Invalid code' });
+
+    if (!user || !user.totpEnabled || !user.totpSecret) return generic();
+    if (user.isActive === false) {
+      return res.status(403).json({ success: false, message: 'Account has been disabled' });
+    }
+
+    // Rate limit: too many failed attempts
+    if ((user.mfaFailedAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+      user.mfaFailedAttempts = 0;
+      await user.save();
+      return res.status(429).json({ success: false, message: 'Too many attempts. Please wait and try again.' });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: user.totpSecret,
+      encoding: 'base32',
+      token: String(token),
+      window: 1,
+    });
+
+    if (!verified) {
+      user.mfaFailedAttempts = (user.mfaFailedAttempts || 0) + 1;
+      await user.save();
+      req.setAudit?.('LOGIN_FAILED', { details: { email: user.email, reason: 'bad totp' } });
+      return generic();
+    }
+
+    // Success: reset failed attempts, issue tokens
+    user.mfaFailedAttempts = 0;
+    await user.save();
+    await logAttempt(req, user.email, true);
+    req.setAudit?.('LOGIN_SUCCESS', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email, mfa: 'totp' },
+    });
+
+    const passwordExpired =
+      user.passwordExpiresAt && user.passwordExpiresAt.getTime() < Date.now();
+    const { accessToken, csrfToken } = await startSession(req, res, user);
+    return res.json({
+      success: true,
+      accessToken,
+      csrfToken,
+      user: sanitizeUser(user),
+      passwordExpired: !!passwordExpired,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/use-backup-code   (login recovery)
+// Body: { email, backupCode }. Uses a single-use backup code to log in.
+exports.useBackupCode = async (req, res, next) => {
+  try {
+    const { email, backupCode } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
+      '+totpBackupCodes +password +googleId'
+    );
+
+    const generic = () =>
+      res.status(400).json({ success: false, message: 'Invalid backup code' });
+
+    if (!user || !user.totpEnabled) return generic();
+    if (user.isActive === false) {
+      return res.status(403).json({ success: false, message: 'Account has been disabled' });
+    }
+
+    const codes = user.totpBackupCodes || [];
+    if (codes.length === 0) return generic();
+
+    // Find which backup code matches
+    let matchIndex = -1;
+    for (let i = 0; i < codes.length; i++) {
+      const match = await bcrypt.compare(String(backupCode).trim(), codes[i]);
+      if (match) {
+        matchIndex = i;
+        break;
+      }
+    }
+
+    if (matchIndex === -1) {
+      req.setAudit?.('LOGIN_FAILED', { details: { email: user.email, reason: 'bad backup code' } });
+      return generic();
+    }
+
+    // Remove the used code (single-use)
+    codes.splice(matchIndex, 1);
+    user.totpBackupCodes = codes;
+    user.mfaFailedAttempts = 0;
+    await user.save();
+
+    await logAttempt(req, user.email, true);
+    req.setAudit?.('LOGIN_SUCCESS', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email, mfa: 'backup_code', codesRemaining: codes.length },
+    });
+
+    notify(user._id, {
+      title: 'Backup code used',
+      message: `A backup code was used to sign in. You have ${codes.length} remaining.`,
+      type: 'warning',
+      link: '/profile',
+    });
+
+    const passwordExpired =
+      user.passwordExpiresAt && user.passwordExpiresAt.getTime() < Date.now();
+    const { accessToken, csrfToken } = await startSession(req, res, user);
+    return res.json({
+      success: true,
+      accessToken,
+      csrfToken,
+      user: sanitizeUser(user),
+      passwordExpired: !!passwordExpired,
+      codesRemaining: codes.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/mfa/send-email-recovery   (TOTP users who lost their device)
+// Body: { email }. Sends an email OTP as a recovery method.
+exports.sendEmailRecovery = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() });
+
+    // Always generic response
+    const genericResponse = () =>
+      res.json({ success: true, message: 'If recovery is available, a code has been sent to your email.' });
+
+    if (!user || !user.totpEnabled) return genericResponse();
+
+    await issueOtp(user);
+    recordAudit('MFA_EMAIL_RECOVERY_SENT', req, {
+      resource: 'user',
+      resourceId: user._id,
+    });
+    return genericResponse();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route POST /api/auth/verify-email-recovery   (login via email fallback for TOTP users)
+// Body: { email, otp }. Verifies the email OTP and issues tokens.
+exports.verifyEmailRecovery = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
+      '+mfaCode +mfaCodeExpires +mfaFailedAttempts +password +googleId'
+    );
+
+    const generic = () =>
+      res.status(400).json({ success: false, message: 'Invalid or expired code' });
+
+    if (!user || !user.totpEnabled) return generic();
+    if (user.isActive === false) {
+      return res.status(403).json({ success: false, message: 'Account has been disabled' });
+    }
+
+    const result = await checkOtp(user, otp);
+    if (!result.ok) {
+      await user.save();
+      if (result.reason === 'expired') {
+        return res.status(400).json({ success: false, message: 'Code expired. Please request a new one.' });
+      }
+      if (result.reason === 'attempts') {
+        return res.status(429).json({ success: false, message: 'Too many attempts. Please request a new code.' });
+      }
+      req.setAudit?.('LOGIN_FAILED', { details: { email: user.email, reason: 'bad email recovery otp' } });
+      return generic();
+    }
+
+    // Success
+    clearOtpState(user);
+    await user.save();
+    await logAttempt(req, user.email, true);
+    req.setAudit?.('LOGIN_SUCCESS', {
+      resource: 'user',
+      resourceId: user._id,
+      details: { email: user.email, mfa: 'email_recovery' },
+    });
+
+    const passwordExpired =
+      user.passwordExpiresAt && user.passwordExpiresAt.getTime() < Date.now();
+    const { accessToken, csrfToken } = await startSession(req, res, user);
+    return res.json({
+      success: true,
+      accessToken,
+      csrfToken,
+      user: sanitizeUser(user),
+      passwordExpired: !!passwordExpired,
     });
   } catch (error) {
     next(error);
