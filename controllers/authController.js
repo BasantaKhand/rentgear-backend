@@ -243,6 +243,16 @@ exports.login = async (req, res, next) => {
     const { email, password, captchaToken, captchaAnswer } = req.body;
     const ip = req.ip || req.connection?.remoteAddress || '';
 
+    // VULN-1 fix (Improper Error Handling / NoSQL operator injection):
+    // Reject non-string credentials up-front. A payload like {"$ne":""} would
+    // otherwise flow into User.findOne / bcrypt.compare, crash with a 500, and
+    // leak internal error detail. Respond with a generic 400 instead.
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid credentials' });
+    }
+
     // Once an IP has failed enough times, force a CAPTCHA before we even check
     // the password. Prevents automated password-guessing from this client.
     const captchaRequired = getFailedLoginCount(ip) >= CAPTCHA_AFTER_ATTEMPTS;
@@ -275,11 +285,12 @@ exports.login = async (req, res, next) => {
       });
     }
 
-    // Timing-safe-ish: always run a compare, even for unknown emails
-    const hash = user ? user.password : DUMMY_HASH;
-    const isMatch = await bcrypt.compare(password || '', hash);
+    // Timing-safe-ish: always run a compare, even for unknown emails or accounts
+    // with no local password (Google-only users) so we never 500 or leak timing.
+    const hash = user && user.password ? user.password : DUMMY_HASH;
+    const isMatch = await bcrypt.compare(password, hash);
 
-    if (!user || !isMatch) {
+    if (!user || !user.password || !isMatch) {
       // Track the failure against the IP (feeds auto-block + captcha gating).
       await recordFailedLogin(ip);
       const ipFailures = getFailedLoginCount(ip);
