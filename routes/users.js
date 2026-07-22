@@ -13,17 +13,20 @@ const validate = require('../middleware/validate');
 const { uploadId, handleUpload, processUpload } = require('../middleware/upload');
 const { passwordResetLimiter } = require('../middleware/rateLimiter');
 const { profileUpdateRules, changePasswordRules } = require('../middleware/validator');
+const { verifyCsrf } = require('../middleware/csrf');
 
 // @route  GET /api/users/profile
 router.get('/profile', auth, getProfile);
 
 // @route  PUT /api/users/profile
-router.put('/profile', auth, profileUpdateRules, validate, updateProfile);
+// VULN-2 fix: state-changing requests require a valid CSRF token (double-submit).
+router.put('/profile', auth, verifyCsrf, profileUpdateRules, validate, updateProfile);
 
 // @route  POST /api/users/upload-id
 router.post(
   '/upload-id',
   auth,
+  verifyCsrf,
   handleUpload(uploadId.single('idDocument')),
   processUpload('ids'),
   uploadIdDocument
@@ -36,6 +39,7 @@ router.get('/rental-history', auth, getRentalHistory);
 router.put(
   '/change-password',
   auth,
+  verifyCsrf,
   passwordResetLimiter,
   changePasswordRules,
   validate,
