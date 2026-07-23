@@ -253,35 +253,65 @@ exports.login = async (req, res, next) => {
         .json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Once an IP has failed enough times, force a CAPTCHA before we even check
-    // the password. Prevents automated password-guessing from this client.
-    const captchaRequired = getFailedLoginCount(ip) >= CAPTCHA_AFTER_ATTEMPTS;
-    if (captchaRequired && !verifyCaptcha(captchaToken, captchaAnswer)) {
-      await logAttempt(req, email, false);
-      return res.status(400).json({
-        success: false,
-        message: 'CAPTCHA verification required. Please solve the challenge.',
-        captchaRequired: true,
-      });
-    }
-
-    const user = await User.findOne({ email: (email || '').toLowerCase() }).select(
+    // Look up the user first so a failed attempt ALWAYS counts toward the
+    // per-account lockout — even while the IP-level CAPTCHA gate is active.
+    const user = await User.findOne({ email: email.toLowerCase() }).select(
       '+password +googleId'
     );
 
-    // Locked account?
-    if (user && user.lockUntil && user.lockUntil.getTime() > Date.now()) {
-      await logAttempt(req, email, false);
+    const isLocked = () =>
+      user && user.lockUntil && user.lockUntil.getTime() > Date.now();
+
+    const lockedResponse = () => {
+      const minutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / 60000);
       req.setAudit?.('ACCOUNT_LOCKED', {
         resource: 'user',
         resourceId: user._id,
         details: { email, lockUntil: user.lockUntil },
       });
-      const minutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / 60000);
       return res.status(423).json({
         success: false,
         message: `Account locked. Try again in ${minutes} minute(s).`,
         lockUntil: user.lockUntil,
+      });
+    };
+
+    // Already locked? Reject before doing any work.
+    if (isLocked()) {
+      await logAttempt(req, email, false);
+      return lockedResponse();
+    }
+
+    // VULN-3 fix (Account Lockout): register a failed attempt against BOTH the
+    // IP (feeds CAPTCHA + auto-block) and the user account, applying the tiered
+    // lockout. Previously the CAPTCHA gate returned before the per-account
+    // counter was incremented, so the account never actually locked. Running
+    // this even when the CAPTCHA check fails means an attacker who ignores the
+    // challenge still trips the lockout (10 → 15 min, 15 → 1 hour).
+    const registerFailedAttempt = async () => {
+      await recordFailedLogin(ip);
+      if (user) {
+        user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+        if (user.failedLoginAttempts >= 15) {
+          user.lockUntil = new Date(Date.now() + LOCK_1_HOUR);
+        } else if (user.failedLoginAttempts >= 10) {
+          user.lockUntil = new Date(Date.now() + LOCK_15_MIN);
+        }
+        await user.save();
+      }
+    };
+
+    // Once an IP has failed enough times, force a CAPTCHA before we check the
+    // password. A missing/incorrect CAPTCHA is still a failed attempt.
+    const captchaRequired = getFailedLoginCount(ip) >= CAPTCHA_AFTER_ATTEMPTS;
+    if (captchaRequired && !verifyCaptcha(captchaToken, captchaAnswer)) {
+      await registerFailedAttempt();
+      await logAttempt(req, email, false);
+      if (isLocked()) return lockedResponse();
+      return res.status(400).json({
+        success: false,
+        message: 'CAPTCHA verification required. Please solve the challenge.',
+        captchaRequired: true,
       });
     }
 
@@ -291,21 +321,8 @@ exports.login = async (req, res, next) => {
     const isMatch = await bcrypt.compare(password, hash);
 
     if (!user || !user.password || !isMatch) {
-      // Track the failure against the IP (feeds auto-block + captcha gating).
-      await recordFailedLogin(ip);
+      await registerFailedAttempt();
       const ipFailures = getFailedLoginCount(ip);
-
-      let attemptsRemaining;
-      if (user) {
-        user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-        if (user.failedLoginAttempts >= 15) {
-          user.lockUntil = new Date(Date.now() + LOCK_1_HOUR);
-        } else if (user.failedLoginAttempts >= 10) {
-          user.lockUntil = new Date(Date.now() + LOCK_15_MIN);
-        }
-        attemptsRemaining = Math.max(10 - user.failedLoginAttempts, 0);
-        await user.save();
-      }
       await logAttempt(req, email, false);
       req.setAudit?.('LOGIN_FAILED', { details: { email } });
       // Repeated failures from one IP → flag as suspicious (separate event).
@@ -314,6 +331,11 @@ exports.login = async (req, res, next) => {
           details: { reason: 'repeated failed logins', ipFailures, email },
         });
       }
+      // If this attempt pushed the account over the threshold, say so.
+      if (isLocked()) return lockedResponse();
+      const attemptsRemaining = user
+        ? Math.max(10 - user.failedLoginAttempts, 0)
+        : undefined;
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials',
