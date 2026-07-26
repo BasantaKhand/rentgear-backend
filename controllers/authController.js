@@ -875,7 +875,13 @@ exports.forgotPassword = async (req, res, next) => {
     user.resetPasswordExpires = new Date(Date.now() + RESET_TOKEN_TTL_MS);
     await user.save();
 
-    // Build the reset URL using the raw (unhashed) token
+    // Build the reset URL using the raw (unhashed) token.
+    // Pentest VULN-6 (sensitive info in URL — Info, reviewed & accepted):
+    // placing the reset token in the URL is standard practice and is safe here:
+    //   - the token is single-use (cleared after a successful reset),
+    //   - it expires after 15 minutes (RESET_TOKEN_TTL_MS),
+    //   - it is 32 bytes of CSPRNG output and only its SHA-256 hash is stored,
+    //   - HTTPS encrypts the URL in transit.
     const clientUrl = (process.env.CLIENT_URL || 'https://localhost:5173')
       .split(',')[0]
       .trim();
